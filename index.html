@@ -147,19 +147,27 @@ function buildZoneLayers(fc, paneName, style, dayMap){
 async function loadZones(){
   const res = await fetch('zone-history.json', {cache:'no-store'});
   const data = await res.json();
-  infPolys  = buildZoneLayers(data.infested,'infPane',
+  // The file is either the original flat baseline (infested/surveillance at the
+  // top level) or, once the auto-updater has run, a {snapshots:[...]} list whose
+  // last entry is the most recent state. Read whichever applies.
+  const src = (data.snapshots && data.snapshots.length)
+              ? data.snapshots[data.snapshots.length - 1]
+              : data;
+  infPolys  = buildZoneLayers(src.infested,'infPane',
     {color:'#b45309',weight:1.5,fillColor:'#fbbf24',fillOpacity:.55}, infestedDay);
-  survPolys = buildZoneLayers(data.surveillance,'survPane',
+  survPolys = buildZoneLayers(src.surveillance,'survPane',
     {color:'#1d4ed8',weight:1.5,fillColor:'#3b82f6',fillOpacity:.30}, survDay);
-  // Pre-merge Edwards-only form of oid 47
+  // Pre-merge Edwards-only form of oid 47 (kept at top level in both formats)
   const t = data.surv47Truncated;
-  surv47Trunc = L.polygon(
-    t.geometry.coordinates.map(r=>r.map(p=>[p[1],p[0]])),
-    {pane:'survPane',color:'#1d4ed8',weight:1.5,fillColor:'#3b82f6',fillOpacity:.30}
-  );
-  SURV47_TRUNC_DAY = t.properties.appearDay;          // Edwards alone
+  if(t){
+    surv47Trunc = L.polygon(
+      t.geometry.coordinates.map(r=>r.map(p=>[p[1],p[0]])),
+      {pane:'survPane',color:'#1d4ed8',weight:1.5,fillColor:'#3b82f6',fillOpacity:.30}
+    );
+    SURV47_TRUNC_DAY = t.properties.appearDay;        // Edwards alone
+  }
   SURV47_FULL_DAY  = survDay[47] != null ? survDay[47] // full merged form
-                     : (data.surveillance.features.find(f=>f.properties.oid===47)||{}).properties.appearDay;
+                     : (src.surveillance.features.find(f=>f.properties.oid===47)||{properties:{}}).properties.appearDay;
   updateVis();
 }
 
