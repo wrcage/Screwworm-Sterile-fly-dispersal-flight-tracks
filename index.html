@@ -21,7 +21,7 @@
   .achdr .acname:hover{color:#2563eb;}
   .achdr .caret{display:inline-block;width:12px;font-size:10px;color:#6b7280;margin-right:2px;}
   .achdr .account{color:#6b7280;font-weight:600;margin-left:3px;}
-  .achdr .actoggle{font-size:10px;font-weight:600;color:#2563eb;cursor:pointer;user-select:none;margin-left:8px;flex:none;}
+  .achdr .accb{margin:0 7px 0 0;cursor:pointer;flex:none;}
   .aclist{overflow:hidden;}
   .aclist.collapsed{display:none;}
   .row{margin:3px 0 3px 2px;display:flex;align-items:center;user-select:none;}
@@ -73,6 +73,12 @@
     pointer-events:none;z-index:1;}
   #t-ticks .tick{width:1px;height:6px;background:#94a3b8;}
   #t-ticks .tick.major{height:8px;background:#475569;}
+  #t-window{display:flex;align-items:center;gap:5px;margin-top:9px;flex-wrap:wrap;}
+  .t-winlabel{font-size:11px;color:#6b7280;font-weight:600;margin-right:2px;}
+  .winpill{font-size:11px;font-weight:600;color:#374151;background:#f1f5f9;
+    border-radius:11px;padding:3px 9px;cursor:pointer;user-select:none;line-height:1.2;}
+  .winpill:hover{background:#e2e8f0;}
+  .winpill.active{background:#2563eb;color:#fff;}
   #t-bubble{position:absolute;bottom:calc(100% + 4px);
     background:#111;color:#fff;padding:3px 9px;border-radius:6px;
     font-weight:700;font-size:11px;white-space:nowrap;
@@ -90,6 +96,14 @@
     <input type="range" id="t-slider" min="0" max="17" value="17" step="1">
   </div>
   <span class="t-edge" id="t-max-label">Jun 16</span>
+</div>
+<div id="t-window">
+  <span class="t-winlabel">Flights:</span>
+  <span class="winpill active" data-win="99">All</span>
+  <span class="winpill" data-win="14">14d</span>
+  <span class="winpill" data-win="7">7d</span>
+  <span class="winpill" data-win="3">3d</span>
+  <span class="winpill" data-win="1">1d</span>
 </div></div>
 <div id="map"></div>
 <button class="legtoggle" id="legtoggle" onclick="toggleLegend()" aria-label="Show legend">&#9776;</button>
@@ -99,7 +113,7 @@
   <div class="sub">USDA screwworm SIT &middot; Dynamic Aviation &middot; FlightAware logs</div>
   <div class="allrow"><a onclick="setAll(true)">Show all</a> &middot; <a onclick="setAll(false)">Hide all</a></div>
   <div id="legend"></div>
-  <div class="hint">Tap a tail number to see its flights; tap a flight name to zoom and jump the timeline to that day. The on/off control hides or shows a whole tail. Each active tail has its own color; less-active tails share grey. Yellow = infested zone, blue = surveillance (TAHC). Green = flight start, red = end. Basemap switch is top-right.</div>
+  <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Yellow = infested zone, blue = surveillance (TAHC). Green = flight start, red = end. Basemap switch is top-right.</div>
   <div class="hint" style="border-top:none;padding-top:4px;">Contact: William Cage - wrcage@gmail.com</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
@@ -186,6 +200,7 @@ const DAY_LABELS = ['May 30','May 31','Jun 1','Jun 2','Jun 3','Jun 4','Jun 5',
 const flightShown = flights.map(()=>true);
 const zoneShown   = {inf:true, surv:true};
 let currentDay    = 17;
+let windowDays    = 99;   // trailing window for FLIGHTS only; 99 = show all (no trailing cutoff)
 
 function setVis(layer, want){
   const has = map.hasLayer(layer);
@@ -193,9 +208,15 @@ function setVis(layer, want){
   else if(!want && has) map.removeLayer(layer);
 }
 function updateVis(){
+  // Trailing window applies to FLIGHTS ONLY. A flight shows if it's on/before the
+  // slider day AND (window is "all" OR it's within windowDays before the slider).
+  const winStart = (windowDays >= 99) ? -Infinity : (currentDay - windowDays + 1);
   flights.forEach((f,i)=>{
-    setVis(groups[i], flightShown[i] && f.day <= currentDay);
+    const inWindow = f.day <= currentDay && f.day >= winStart;
+    setVis(groups[i], flightShown[i] && inWindow);
   });
+  // Zones are cumulative and IGNORE the trailing window — a zone that has appeared
+  // stays visible through every later day regardless of the flight window setting.
   Object.keys(infPolys).forEach(oid=>{
     setVis(infPolys[oid], zoneShown.inf && infestedDay[oid] <= currentDay);
   });
@@ -240,6 +261,16 @@ slider.addEventListener('input', ()=>{
 window.addEventListener('resize', updateBubble);
 updateBubble();
 
+// Trailing-window pills (flights only)
+const winRow = document.getElementById('t-window');
+winRow.addEventListener('click', ev=>{
+  const pill = ev.target.closest('.winpill');
+  if(!pill) return;
+  windowDays = +pill.getAttribute('data-win');
+  winRow.querySelectorAll('.winpill').forEach(p=>p.classList.toggle('active', p===pill));
+  updateVis();
+});
+
 // kept for compat with any old code paths referencing zoneLayers
 const zoneLayers={};
 // zone legend section
@@ -268,10 +299,10 @@ flights.forEach((f,i)=>{
   groups[i]=g; fb[i]=ll; ll.forEach(p=>all.push(p));
 });
 
-// Build the legend grouped by aircraft. Each tail = a header (color swatch +
-// flight count + expand caret) followed by a collapsible list of its flights.
-// Lists start collapsed; clicking the header expands/collapses. The small
-// "on/off" control toggles every flight for that tail.
+// Build the legend grouped by aircraft. Each tail = a header (checkbox + color
+// swatch + flight count + expand caret) followed by a collapsible list of its
+// flights. Lists start collapsed; tapping the name expands/collapses. The header
+// checkbox shows/hides every flight for that tail (indeterminate when mixed).
 const acOrder = [];
 const acFlights = {};
 flights.forEach((f,i)=>{
@@ -284,12 +315,12 @@ acOrder.forEach(ac=>{
   const hdr = document.createElement('div');
   hdr.className='achdr';
   hdr.innerHTML =
+    '<input type="checkbox" class="accb" id="accb_'+ac+'" data-accb="'+ac+'" checked>'+
     '<span class="acname" data-acexp="'+ac+'">'+
       '<span class="caret" id="caret_'+ac+'">&#9656;</span>'+
       '<span class="sw" style="border-top-color:'+color+';"></span>'+
       ac+' <span class="account">('+idxs.length+')</span>'+
-    '</span>'+
-    '<span class="actoggle" data-ac="'+ac+'">on/off</span>';
+    '</span>';
   legend.appendChild(hdr);
 
   const list = document.createElement('div');
@@ -309,14 +340,36 @@ acOrder.forEach(ac=>{
 
 legend.addEventListener('change',ev=>{
   const id=ev.target.id;
-  if(id && id.startsWith('cb')){
-    flightShown[+id.slice(2)] = ev.target.checked;
+  if(id && id.startsWith('accb_')){
+    // Tail-level checkbox: set every flight of that tail to match
+    const ac = ev.target.getAttribute('data-accb');
+    const on = ev.target.checked;
+    acFlights[ac].forEach(i=>{
+      flightShown[i] = on;
+      const cb=document.getElementById('cb'+i); if(cb) cb.checked = on;
+    });
+    updateVis();
+  } else if(id && id.startsWith('cb')){
+    const i = +id.slice(2);
+    flightShown[i] = ev.target.checked;
+    syncTailCheckbox(flights[i].ac);
     updateVis();
   } else if(id && id.startsWith('z_')){
     zoneShown[id.slice(2)] = ev.target.checked;
     updateVis();
   }
 });
+
+// Keep a tail's header checkbox in sync with its individual flights:
+// checked if all on, unchecked if all off, indeterminate if mixed.
+function syncTailCheckbox(ac){
+  const idxs = acFlights[ac];
+  const onCount = idxs.filter(i=>flightShown[i]).length;
+  const cb = document.getElementById('accb_'+ac);
+  if(!cb) return;
+  cb.checked = onCount === idxs.length;
+  cb.indeterminate = onCount > 0 && onCount < idxs.length;
+}
 legend.addEventListener('click',ev=>{
   // Flight name: zoom to it AND jump the timeline to its day
   const zEl = ev.target.closest('[data-zoom]');
@@ -335,9 +388,6 @@ legend.addEventListener('click',ev=>{
     if(bnds) map.fitBounds(bnds,{padding:[40,40]});
     return;
   }
-  // "on/off" control toggles all flights for a tail
-  const ac=ev.target.getAttribute('data-ac');
-  if(ac){ toggleAc(ac); return; }
   // Clicking the tail name (anywhere on it) expands/collapses its flight list
   const expEl = ev.target.closest('[data-acexp]');
   if(expEl){ toggleAcExpand(expEl.getAttribute('data-acexp')); }
@@ -359,21 +409,14 @@ function jumpToDay(day){
   updateVis();
 }
 
-function toggleAc(ac){
-  let anyOn=false;
-  flights.forEach((f,i)=>{ if(f.ac===ac && flightShown[i]) anyOn=true; });
-  flights.forEach((f,i)=>{
-    if(f.ac===ac){
-      flightShown[i] = !anyOn;
-      document.getElementById('cb'+i).checked = !anyOn;
-    }
-  });
-  updateVis();
-}
 window.setAll=on=>{
   flights.forEach((f,i)=>{
     flightShown[i] = on;
-    document.getElementById('cb'+i).checked = on;
+    const cb=document.getElementById('cb'+i); if(cb) cb.checked = on;
+  });
+  acOrder.forEach(ac=>{
+    const hcb=document.getElementById('accb_'+ac);
+    if(hcb){ hcb.checked = on; hcb.indeterminate = false; }
   });
   updateVis();
 };
