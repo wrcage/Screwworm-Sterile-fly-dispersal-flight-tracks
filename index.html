@@ -135,45 +135,52 @@ const TRANSIT_WEIGHT  = 2;
 const DROP_OPACITY    = 0.95;
 const DROP_WEIGHT     = 3;
 
-function classifyPhases(coords){
+function classifyPhases(coords, override){
   // Returns an array of 'drop' | 'transit' strings, one per coord point.
-  // Algorithm (modal-band + merge):
-  //   1. Histogram altitudes between MODE_LOWER_LIMIT_FT and MODE_UPPER_LIMIT_FT
-  //      in 100-ft bins. The most populated bin is the flight's drop-altitude
-  //      mode — where the plane actually spent its working time.
-  //   2. Drop band = mode +/- DROP_BAND_HALF_FT.
-  //   3. Find contiguous runs of in-band points; each run >= MIN_DROP_POINTS
-  //      counts as a drop pass.
-  //   4. Merge adjacent runs separated by short out-of-band gaps — brief
-  //      mid-mission climbs between drop zones are part of the same work
-  //      session, not separate flights.
-  //   5. Everything outside merged runs = transit (cruise, climbout, landing
-  //      descent, inter-mission positioning).
-  // Landing descent and takeoff climb pass through the drop band only briefly
-  // while monotonically changing altitude, so they naturally fall outside the
-  // detected band and stay transit.
+  // Algorithm (modal-band + merge) with optional per-flight override:
+  //   override.band:  [min, max] — custom altitude band (skips auto-detection)
+  //   override.start: index — points before this are forced to transit (drop
+  //                   can only start at or after this index)
+  //   override.end:   index — points after this are forced to transit (drop
+  //                   ends here; useful for speed-based "drop stopped" cases
+  //                   where the plane stays at altitude but speed increases)
+  // Without override, the algorithm auto-detects each flight's drop band by
+  // finding the modal altitude (where the plane spent the most time, ignoring
+  // ground/taxi and cruise). Drop = sustained in-band runs, merged across
+  // short out-of-band climbs to handle multi-pass missions.
   const n = coords.length;
   if(n === 0) return [];
-  const histogram = Object.create(null);
-  for(let i = 0; i < n; i++){
-    const a = coords[i][2];
-    if(a != null && a >= MODE_LOWER_LIMIT_FT && a < MODE_UPPER_LIMIT_FT){
-      const bin = Math.round(a / 100) * 100;
-      histogram[bin] = (histogram[bin] || 0) + 1;
+  override = override || {};
+  const rangeStart = (override.start != null) ? override.start : 0;
+  const rangeEnd   = (override.end   != null) ? (override.end + 1) : n;
+  let dropMin, dropMax;
+  if(override.band){
+    [dropMin, dropMax] = override.band;
+  } else {
+    // Auto-detect modal altitude
+    const histogram = Object.create(null);
+    for(let i = 0; i < n; i++){
+      const a = coords[i][2];
+      if(a != null && a >= MODE_LOWER_LIMIT_FT && a < MODE_UPPER_LIMIT_FT){
+        const bin = Math.round(a / 100) * 100;
+        histogram[bin] = (histogram[bin] || 0) + 1;
+      }
     }
+    let modeBin = null, modeCount = 0;
+    for(const k in histogram){
+      if(histogram[k] > modeCount){ modeCount = histogram[k]; modeBin = +k; }
+    }
+    if(modeBin == null) return new Array(n).fill('transit');
+    dropMin = modeBin - DROP_BAND_HALF_FT;
+    dropMax = modeBin + DROP_BAND_HALF_FT;
   }
-  let modeBin = null, modeCount = 0;
-  for(const k in histogram){
-    if(histogram[k] > modeCount){ modeCount = histogram[k]; modeBin = +k; }
-  }
-  if(modeBin == null) return new Array(n).fill('transit');
-  const dropMin = modeBin - DROP_BAND_HALF_FT;
-  const dropMax = modeBin + DROP_BAND_HALF_FT;
+  // Find drop runs within [rangeStart, rangeEnd)
   const runs = [];
   let runStart = -1;
   for(let i = 0; i <= n; i++){
-    const a = (i < n) ? coords[i][2] : null;
-    const inBand = (i < n) && (a != null && a >= dropMin && a <= dropMax);
+    const inRange = (i >= rangeStart && i < rangeEnd);
+    const a = (i < n && inRange) ? coords[i][2] : null;
+    const inBand = inRange && (i < n) && (a != null && a >= dropMin && a <= dropMax);
     if(inBand && runStart === -1) runStart = i;
     else if(!inBand && runStart !== -1){
       if(i - runStart >= MIN_DROP_POINTS) runs.push([runStart, i]);
@@ -400,7 +407,7 @@ legend.insertAdjacentHTML('beforeend','<div class="achdr">NWS zones (TAHC)</div>
 flights.forEach((f,i)=>{
   const ll = f.coords.map(c => [c[0], c[1]]);
   const g  = L.layerGroup();
-  const phases = classifyPhases(f.coords);
+  const phases = classifyPhases(f.coords, f.dropOverride);
   const segs   = buildPhaseSegments(f.coords, phases);
   segs.forEach(seg => {
     if(seg.phase === 'drop'){
