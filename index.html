@@ -121,46 +121,76 @@
 let flights = []; // populated asynchronously by initFlights() below
 
 // --- Transit de-emphasis settings ---------------------------------------
-// Tune these 6 numbers to change how cruise/transit legs are faded relative
-// to the drop legs. CRUISE_ALT_FT anchors "this flight has reached transit
-// altitude" — used to label initial climbout and final descent as transit
-// even though they pass through the drop band. DROP_CUTOFF_FT is the band
-// below which mid-flight points are classified as drop work.
-const CRUISE_ALT_FT  = 11000;
-const DROP_CUTOFF_FT = 8600;
+// The drop band is auto-detected per flight by finding the modal altitude
+// (where the plane spent the most time, excluding cruise and ground/taxi).
+// Tune these numbers to widen/narrow the drop band, change the merge
+// behavior across brief mid-mission climbs, or adjust the fade styling.
+const MODE_LOWER_LIMIT_FT = 3000;   // ignore taxi/landing altitudes when finding the drop band
+const MODE_UPPER_LIMIT_FT = 9500;   // ignore cruise altitudes when finding the drop band
+const DROP_BAND_HALF_FT   = 1000;   // drop band = modal altitude ± this
+const MIN_DROP_POINTS     = 30;     // min contiguous in-band points to count as drop
+const MERGE_GAP_POINTS    = 100;    // adjacent drop runs separated by < this many out-of-band points get merged
 const TRANSIT_OPACITY = 0.35;
 const TRANSIT_WEIGHT  = 2;
 const DROP_OPACITY    = 0.95;
-const MIN_DROP_POINTS = 30;     // contiguous low-alt points required to count as drop work
 const DROP_WEIGHT     = 3;
 
 function classifyPhases(coords){
   // Returns an array of 'drop' | 'transit' strings, one per coord point.
-  // Algorithm (length-based):
-  //   1. Find contiguous runs of points with alt < DROP_CUTOFF_FT (or null alt).
-  //   2. Each run that lasts at least MIN_DROP_POINTS contiguous points is a
-  //      real drop pass; shorter low-altitude passes are treated as transit
-  //      (takeoff climb-through-band, landing descent-through-band, etc.).
-  //   3. Everything else (cruise, transitions, climbs/descents) is transit.
-  // This robustly handles Tampico-grid flights, multi-drop flights, and
-  // direct-descent-to-destination flights that the older cruise-anchor
-  // approach was misclassifying.
+  // Algorithm (modal-band + merge):
+  //   1. Histogram altitudes between MODE_LOWER_LIMIT_FT and MODE_UPPER_LIMIT_FT
+  //      in 100-ft bins. The most populated bin is the flight's drop-altitude
+  //      mode — where the plane actually spent its working time.
+  //   2. Drop band = mode +/- DROP_BAND_HALF_FT.
+  //   3. Find contiguous runs of in-band points; each run >= MIN_DROP_POINTS
+  //      counts as a drop pass.
+  //   4. Merge adjacent runs separated by short out-of-band gaps — brief
+  //      mid-mission climbs between drop zones are part of the same work
+  //      session, not separate flights.
+  //   5. Everything outside merged runs = transit (cruise, climbout, landing
+  //      descent, inter-mission positioning).
+  // Landing descent and takeoff climb pass through the drop band only briefly
+  // while monotonically changing altitude, so they naturally fall outside the
+  // detected band and stay transit.
   const n = coords.length;
   if(n === 0) return [];
-  const phases = new Array(n).fill('transit');
+  const histogram = Object.create(null);
+  for(let i = 0; i < n; i++){
+    const a = coords[i][2];
+    if(a != null && a >= MODE_LOWER_LIMIT_FT && a < MODE_UPPER_LIMIT_FT){
+      const bin = Math.round(a / 100) * 100;
+      histogram[bin] = (histogram[bin] || 0) + 1;
+    }
+  }
+  let modeBin = null, modeCount = 0;
+  for(const k in histogram){
+    if(histogram[k] > modeCount){ modeCount = histogram[k]; modeBin = +k; }
+  }
+  if(modeBin == null) return new Array(n).fill('transit');
+  const dropMin = modeBin - DROP_BAND_HALF_FT;
+  const dropMax = modeBin + DROP_BAND_HALF_FT;
+  const runs = [];
   let runStart = -1;
   for(let i = 0; i <= n; i++){
     const a = (i < n) ? coords[i][2] : null;
-    const isLow = (i < n) && (a == null || a < DROP_CUTOFF_FT);
-    if(isLow && runStart === -1){
-      runStart = i;
-    } else if(!isLow && runStart !== -1){
-      // End of a low-altitude run; promote to drop if long enough
-      if(i - runStart >= MIN_DROP_POINTS){
-        for(let k = runStart; k < i; k++) phases[k] = 'drop';
-      }
+    const inBand = (i < n) && (a != null && a >= dropMin && a <= dropMax);
+    if(inBand && runStart === -1) runStart = i;
+    else if(!inBand && runStart !== -1){
+      if(i - runStart >= MIN_DROP_POINTS) runs.push([runStart, i]);
       runStart = -1;
     }
+  }
+  const merged = [];
+  for(const r of runs){
+    if(merged.length && r[0] - merged[merged.length - 1][1] < MERGE_GAP_POINTS){
+      merged[merged.length - 1][1] = r[1];
+    } else {
+      merged.push([r[0], r[1]]);
+    }
+  }
+  const phases = new Array(n).fill('transit');
+  for(const r of merged){
+    for(let i = r[0]; i < r[1]; i++) phases[i] = 'drop';
   }
   return phases;
 }
