@@ -30,8 +30,8 @@
   .row .lbl{cursor:pointer;flex:1;}
   .row .lbl:hover{color:#2563eb;text-decoration:underline;}
   .allrow{margin:2px 0 6px 2px;font-size:11px;}
-  .allrow a{color:#2563eb;cursor:pointer;text-decoration:none;}
-  .allrow a:hover{text-decoration:underline;}
+  .allrow label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;color:#374151;font-weight:600;}
+  .allrow input[type=checkbox]{cursor:pointer;}
   .hint{font-size:11px;color:#6b7280;margin-top:9px;border-top:1px solid #e5e7eb;padding-top:8px;}
   .legtoggle{position:absolute;top:12px;left:12px;z-index:1001;background:rgba(255,255,255,.96);
     color:#1f2937;border:none;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.3);
@@ -111,7 +111,7 @@
   <button class="panelclose" onclick="toggleLegend()" aria-label="Hide legend">&times;</button>
   <h1>Sterile-fly dispersal tracks</h1>
   <div class="sub">USDA screwworm SIT &middot; Dynamic Aviation &middot; FlightAware logs</div>
-  <div class="allrow"><a onclick="setAll(true)">Show all</a> &middot; <a onclick="setAll(false)">Hide all</a></div>
+  <div class="allrow"><label><input type="checkbox" id="allFlightsCb" checked> All flights</label></div>
   <div id="legend"></div>
   <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Yellow = infested zone, blue = surveillance (TAHC). Green = flight start, red = end. Basemap switch is top-right.</div>
   <div class="hint" style="border-top:none;padding-top:4px;">Contact: William Cage - wrcage@gmail.com</div>
@@ -119,6 +119,70 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
 let flights = []; // populated asynchronously by initFlights() below
+
+// --- Transit de-emphasis settings ---------------------------------------
+// Tune these 6 numbers to change how cruise/transit legs are faded relative
+// to the drop legs. CRUISE_ALT_FT anchors "this flight has reached transit
+// altitude" — used to label initial climbout and final descent as transit
+// even though they pass through the drop band. DROP_CUTOFF_FT is the band
+// below which mid-flight points are classified as drop work.
+const CRUISE_ALT_FT  = 11000;
+const DROP_CUTOFF_FT = 8600;
+const TRANSIT_OPACITY = 0.35;
+const TRANSIT_WEIGHT  = 2;
+const DROP_OPACITY    = 0.95;
+const MIN_DROP_POINTS = 30;     // contiguous low-alt points required to count as drop work
+const DROP_WEIGHT     = 3;
+
+function classifyPhases(coords){
+  // Returns an array of 'drop' | 'transit' strings, one per coord point.
+  // Algorithm (length-based):
+  //   1. Find contiguous runs of points with alt < DROP_CUTOFF_FT (or null alt).
+  //   2. Each run that lasts at least MIN_DROP_POINTS contiguous points is a
+  //      real drop pass; shorter low-altitude passes are treated as transit
+  //      (takeoff climb-through-band, landing descent-through-band, etc.).
+  //   3. Everything else (cruise, transitions, climbs/descents) is transit.
+  // This robustly handles Tampico-grid flights, multi-drop flights, and
+  // direct-descent-to-destination flights that the older cruise-anchor
+  // approach was misclassifying.
+  const n = coords.length;
+  if(n === 0) return [];
+  const phases = new Array(n).fill('transit');
+  let runStart = -1;
+  for(let i = 0; i <= n; i++){
+    const a = (i < n) ? coords[i][2] : null;
+    const isLow = (i < n) && (a == null || a < DROP_CUTOFF_FT);
+    if(isLow && runStart === -1){
+      runStart = i;
+    } else if(!isLow && runStart !== -1){
+      // End of a low-altitude run; promote to drop if long enough
+      if(i - runStart >= MIN_DROP_POINTS){
+        for(let k = runStart; k < i; k++) phases[k] = 'drop';
+      }
+      runStart = -1;
+    }
+  }
+  return phases;
+}
+
+function buildPhaseSegments(coords, phases){
+  // Group contiguous same-phase points into segments. Each boundary point is
+  // included in BOTH neighboring segments so the polylines visually touch
+  // (no gaps where phase changes).
+  const segs = [];
+  if(coords.length === 0) return segs;
+  let runStart = 0;
+  for(let i = 1; i < coords.length; i++){
+    if(phases[i] !== phases[runStart]){
+      // End of a run — include the transition point in this segment too
+      segs.push({ phase: phases[runStart], coords: coords.slice(runStart, i + 1).map(c => [c[0], c[1]]) });
+      runStart = i;
+    }
+  }
+  segs.push({ phase: phases[runStart], coords: coords.slice(runStart).map(c => [c[0], c[1]]) });
+  return segs;
+}
+
 const topo = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles &copy; Esri',maxZoom:19});
 const streets = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap contributors',maxZoom:19});
 const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Imagery &copy; Esri',maxZoom:19});
@@ -299,19 +363,32 @@ legend.insertAdjacentHTML('beforeend','<div class="achdr">NWS zones (TAHC)</div>
 });
 
 
-// Draw every flight's map layers (always built; visibility handled by updateVis)
+// Draw every flight's map layers — split each flight into transit/drop
+// segments so cruise legs can be faded relative to drop legs. Always built;
+// per-flight visibility is handled by updateVis(); start/end markers anchor
+// the actual departure and arrival points of the full flight.
 flights.forEach((f,i)=>{
-  const ll=f.coords.map(c=>[c[0],c[1]]);
-  const g=L.layerGroup();
-  L.polyline(ll,{color:'#fff',weight:5,opacity:.5}).addTo(g);
-  L.polyline(ll,{color:f.color,weight:2.5,opacity:.95}).addTo(g);
-  const s=f.coords[0], e=f.coords[f.coords.length-1];
+  const ll = f.coords.map(c => [c[0], c[1]]);
+  const g  = L.layerGroup();
+  const phases = classifyPhases(f.coords);
+  const segs   = buildPhaseSegments(f.coords, phases);
+  segs.forEach(seg => {
+    if(seg.phase === 'drop'){
+      // Drop legs: full halo + bold colored line — these are the work
+      L.polyline(seg.coords, {color:'#fff', weight:5, opacity:0.5}).addTo(g);
+      L.polyline(seg.coords, {color:f.color, weight:DROP_WEIGHT, opacity:DROP_OPACITY}).addTo(g);
+    } else {
+      // Transit legs: thinner, faded, no halo — visible but de-emphasized
+      L.polyline(seg.coords, {color:f.color, weight:TRANSIT_WEIGHT, opacity:TRANSIT_OPACITY}).addTo(g);
+    }
+  });
+  const s = f.coords[0], e = f.coords[f.coords.length - 1];
   L.circleMarker([s[0],s[1]],{radius:6,color:'#000',weight:1,fillColor:'#22c55e',fillOpacity:1})
     .bindPopup('<b>'+f.ac+' &middot; '+f.name+'</b><br>Start '+s[0].toFixed(4)+', '+s[1].toFixed(4)).addTo(g);
   L.circleMarker([e[0],e[1]],{radius:6,color:'#000',weight:1,fillColor:'#ef4444',fillOpacity:1})
     .bindPopup('<b>'+f.ac+' &middot; '+f.name+'</b><br>End '+e[0].toFixed(4)+', '+e[1].toFixed(4)).addTo(g);
   g.addTo(map);
-  groups[i]=g; fb[i]=ll; ll.forEach(p=>all.push(p));
+  groups[i] = g; fb[i] = ll; ll.forEach(p => all.push(p));
 });
 
 // Build the legend grouped by aircraft. Each tail = a header (checkbox + color
@@ -363,11 +440,13 @@ legend.addEventListener('change',ev=>{
       flightShown[i] = on;
       const cb=document.getElementById('cb'+i); if(cb) cb.checked = on;
     });
+    syncMasterCheckbox();
     updateVis();
   } else if(id && id.startsWith('cb')){
     const i = +id.slice(2);
     flightShown[i] = ev.target.checked;
     syncTailCheckbox(flights[i].ac);
+    syncMasterCheckbox();
     updateVis();
   } else if(id && id.startsWith('z_')){
     zoneShown[id.slice(2)] = ev.target.checked;
@@ -384,6 +463,16 @@ function syncTailCheckbox(ac){
   if(!cb) return;
   cb.checked = onCount === idxs.length;
   cb.indeterminate = onCount > 0 && onCount < idxs.length;
+}
+
+// Master "All flights" checkbox: shows the global state across every flight.
+// Same tri-state behavior as the per-tail checkboxes.
+function syncMasterCheckbox(){
+  const cb = document.getElementById('allFlightsCb');
+  if(!cb) return;
+  const onCount = flightShown.filter(Boolean).length;
+  cb.checked = onCount === flightShown.length;
+  cb.indeterminate = onCount > 0 && onCount < flightShown.length;
 }
 legend.addEventListener('click',ev=>{
   // Flight name: zoom to it AND jump the timeline to its day
@@ -433,8 +522,19 @@ window.setAll=on=>{
     const hcb=document.getElementById('accb_'+ac);
     if(hcb){ hcb.checked = on; hcb.indeterminate = false; }
   });
+  syncMasterCheckbox();
   updateVis();
 };
+
+// Wire the master "All flights" checkbox. Sits outside the legend container,
+// so it gets its own listener rather than going through the legend delegation.
+const masterCb = document.getElementById('allFlightsCb');
+if(masterCb){
+  masterCb.addEventListener('change', ev => {
+    setAll(ev.target.checked);
+  });
+}
+syncMasterCheckbox();
 
 updateVis();
 loadZones().catch(err=>console.error('Failed to load zone-history.json:', err));
