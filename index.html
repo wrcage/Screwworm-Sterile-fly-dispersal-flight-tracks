@@ -117,6 +117,7 @@
   <div class="hint" style="border-top:none;padding-top:4px;">Contact: William Cage - wrcage@gmail.com</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
 <script>
 let flights = []; // populated asynchronously by initFlights() below
 
@@ -241,6 +242,61 @@ const legend=document.getElementById('legend');
 map.createPane('survPane'); map.getPane('survPane').style.zIndex='350';
 map.createPane('infPane');  map.getPane('infPane').style.zIndex='360';
 
+// --- Drop-density heat map (Leaflet.heat) ---
+// Sits in its own pane BELOW the zone panes so quarantine zones stay readable on
+// top. OFF by default; toggled from the legend. When on, it shows the density of
+// DROP points only (not transit) for the flights currently visible — i.e. it
+// honors the slider day, the trailing-window pills, and per-flight/tail
+// checkboxes, so the blob always matches what's on the map. Drop classification
+// reuses classifyPhases() (the same logic that fades transit legs), so "heat"
+// means "where sterile flies were actually released," not "where planes flew."
+map.createPane('heatPane'); map.getPane('heatPane').style.zIndex='340';
+let heatLayer = null;
+let heatShown = false;   // default OFF
+// Warm gradient that peaks at deep crimson, kept distinct from infested-zone
+// yellow. Low end is a translucent orange-red; high end saturates to crimson.
+const HEAT_GRADIENT = {0.0:'rgba(255,170,80,0)', 0.2:'#fda050', 0.45:'#f3722c',
+                       0.7:'#e01e37', 1.0:'#9d0208'};
+const HEAT_OPTIONS = {radius:22, blur:18, maxZoom:11, minOpacity:0.25,
+                      pane:'heatPane', gradient:HEAT_GRADIENT};
+
+function collectDropPoints(){
+  // Gather [lat,lon] for every DROP point of every currently-visible flight.
+  // "Visible" = same test updateVis() uses for the polylines: shown checkbox on,
+  // on/before the slider day, and within the trailing window.
+  const winStart = (windowDays >= 99) ? -Infinity : (currentDay - windowDays + 1);
+  const pts = [];
+  flights.forEach((f,i)=>{
+    const inWindow = f.day <= currentDay && f.day >= winStart;
+    if(!(flightShown[i] && inWindow)) return;
+    const phases = classifyPhases(f.coords, f.dropOverride);
+    for(let k=0;k<f.coords.length;k++){
+      if(phases[k] === 'drop'){
+        const c = f.coords[k];
+        pts.push([c[0], c[1]]);   // weight defaults to 1 per point
+      }
+    }
+  });
+  return pts;
+}
+
+function rebuildHeat(){
+  // Cheap no-op when the layer is off: skip all the classification work entirely
+  // so the default (off) state has zero ongoing cost.
+  if(!heatShown){
+    if(heatLayer){ map.removeLayer(heatLayer); }
+    return;
+  }
+  const pts = collectDropPoints();
+  if(heatLayer){
+    heatLayer.setLatLngs(pts);
+    if(!map.hasLayer(heatLayer)) heatLayer.addTo(map);
+  } else {
+    heatLayer = L.heatLayer(pts, HEAT_OPTIONS).addTo(map);
+  }
+}
+
+
 // Zone layers are populated asynchronously from zone-history.json (see loadZones).
 // Each is a map of oid -> Leaflet polygon. appearDay (and for oid 47, the
 // truncated/full split) come baked into the JSON properties.
@@ -340,6 +396,8 @@ function updateVis(){
       setVis(survPolys[oid], zoneShown.surv && survDay[oid] <= currentDay);
     }
   });
+  // Refresh the drop-density heat layer to match what's now visible (no-op when off).
+  rebuildHeat();
 }
 
 (async function initFlights(){
@@ -408,6 +466,18 @@ legend.insertAdjacentHTML('beforeend','<div class="achdr">NWS zones (TAHC)</div>
     '<span class="lbl" data-zonefit="1">'+z[1]+'</span>';
   legend.appendChild(row);
 });
+
+// Drop-density heat map toggle (off by default). Shows where sterile-fly DROPS
+// are densest among the flights currently visible (honors slider + window pills).
+legend.insertAdjacentHTML('beforeend','<div class="achdr">Drop density</div>');
+(function(){
+  const row=document.createElement('div'); row.className='row';
+  row.innerHTML='<input type="checkbox" id="heatToggle">'+
+    '<span class="sw" style="border-top:none;width:24px;height:10px;border-radius:2px;'+
+      'background:linear-gradient(90deg,#fda050,#f3722c,#e01e37,#9d0208);margin-right:7px;"></span>'+
+    '<span class="lbl" id="heatLbl">Drop heat map</span>';
+  legend.appendChild(row);
+})();
 
 
 // Draw every flight's map layers — split each flight into transit/drop
@@ -498,6 +568,9 @@ legend.addEventListener('change',ev=>{
   } else if(id && id.startsWith('z_')){
     zoneShown[id.slice(2)] = ev.target.checked;
     updateVis();
+  } else if(id === 'heatToggle'){
+    heatShown = ev.target.checked;
+    rebuildHeat();
   }
 });
 
