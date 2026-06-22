@@ -91,11 +91,11 @@
 <div id="timeline"><div id="t-row">
   <span class="t-edge" id="t-start-label">May 30</span>
   <div id="t-track">
-    <div id="t-bubble">Jun 17</div>
+    <div id="t-bubble">Jun 22</div>
     <div id="t-ticks"></div>
-    <input type="range" id="t-slider" min="0" max="20" value="20" step="1">
+    <input type="range" id="t-slider" min="0" max="23" value="23" step="1">
   </div>
-  <span class="t-edge" id="t-max-label">Jun 17</span>
+  <span class="t-edge" id="t-max-label">Jun 22</span>
 </div>
 <div id="t-window">
   <span class="t-winlabel">Flights:</span>
@@ -292,15 +292,15 @@ async function loadZones(){
 }
 
 // --- Timeline date metadata ---
-// Day 0 = May 30, last day = Jun 17 (19 days inclusive)
+// Day 0 = May 30, last day = Jun 22 (24 days inclusive)
 const DAY_LABELS = ['May 30','May 31','Jun 1','Jun 2','Jun 3','Jun 4','Jun 5',
                     'Jun 6','Jun 7','Jun 8','Jun 9','Jun 10','Jun 11','Jun 12','Jun 13',
-                    'Jun 14','Jun 15','Jun 16','Jun 17','Jun 18','Jun 19'];
+                    'Jun 14','Jun 15','Jun 16','Jun 17','Jun 18','Jun 19','Jun 20','Jun 21','Jun 22'];
 
 // --- Visibility state ---
 const flightShown = []; // populated by initFlights() after fetch
 const zoneShown   = {inf:true, surv:true};
-let currentDay    = 20;
+let currentDay    = 23;
 let windowDays    = 99;   // trailing window for FLIGHTS only; 99 = show all (no trailing cutoff)
 
 function setVis(layer, want){
