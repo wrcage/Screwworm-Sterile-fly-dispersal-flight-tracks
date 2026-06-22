@@ -243,46 +243,54 @@ map.createPane('survPane'); map.getPane('survPane').style.zIndex='350';
 map.createPane('infPane');  map.getPane('infPane').style.zIndex='360';
 
 // --- Drop-density heat map (Leaflet.heat) ---
-// Sits in its own pane BELOW the zone panes so quarantine zones stay readable on
-// top. OFF by default; toggled from the legend. When on, it shows the density of
-// DROP points only (not transit) for the flights currently visible — i.e. it
-// honors the slider day, the trailing-window pills, and per-flight/tail
-// checkboxes, so the blob always matches what's on the map. Drop classification
-// reuses classifyPhases() (the same logic that fades transit legs), so "heat"
-// means "where sterile flies were actually released," not "where planes flew."
-map.createPane('heatPane'); map.getPane('heatPane').style.zIndex='340';
+// Sits ABOVE the zone panes so the density blob is the focus. OFF by default;
+// toggled from the legend. It shows the density of DROP points only (not
+// transit) and honors the slider day + trailing-window pills, but is INDEPENDENT
+// of the per-flight/tail checkboxes — hiding the flight lines still shows the
+// heat. Drop classification reuses classifyPhases() (same logic that fades
+// transit), so "heat" means "where flies were released," not "where planes flew."
+//
+// Density tuning: each flight's drop points are thinned to ~1 per ~250 m so a
+// single pass lays down an even, sparse line rather than a saturated blob (a slow
+// plane logs many points per second). Darkening then comes from SEPARATE passes
+// overlapping within the blur radius — so one pass reads pale and repeatedly
+// worked areas saturate to crimson. The low `max` + transparent low end of the
+// gradient spread the scale so the gradient is visible instead of all-or-nothing.
+map.createPane('heatPane'); map.getPane('heatPane').style.zIndex='370';
 let heatLayer = null;
 let heatShown = false;   // default OFF
-// Warm gradient that peaks at deep crimson, kept distinct from infested-zone
-// yellow. Low end is a translucent orange-red; high end saturates to crimson.
-const HEAT_GRADIENT = {0.0:'rgba(255,170,80,0)', 0.2:'#fda050', 0.45:'#f3722c',
-                       0.7:'#e01e37', 1.0:'#9d0208'};
-const HEAT_OPTIONS = {radius:22, blur:18, maxZoom:11, minOpacity:0.25,
-                      pane:'heatPane', gradient:HEAT_GRADIENT};
+const HEAT_THIN_DEG = 0.00225;  // ~250 m: thin each pass to one point per cell
+const HEAT_GRADIENT = {0.0:'rgba(157,2,8,0)', 0.15:'rgba(253,160,80,0.55)',
+                       0.4:'#f3722c', 0.7:'#e01e37', 1.0:'#9d0208'};
+const HEAT_OPTIONS = {radius:18, blur:22, max:9, minOpacity:0.0,
+                      maxZoom:11, pane:'heatPane', gradient:HEAT_GRADIENT};
 
 function collectDropPoints(){
-  // Gather [lat,lon] for every DROP point of every currently-visible flight.
-  // "Visible" = same test updateVis() uses for the polylines: shown checkbox on,
-  // on/before the slider day, and within the trailing window.
+  // [lat,lon] for every DROP point of flights on/before the slider day and within
+  // the trailing window. NOT gated by flightShown — heat is independent of the
+  // flight-line checkboxes. Each flight is thinned to ~1 pt per HEAT_THIN_DEG cell
+  // so a single pass contributes evenly and density reflects overlapping passes.
   const winStart = (windowDays >= 99) ? -Infinity : (currentDay - windowDays + 1);
   const pts = [];
-  flights.forEach((f,i)=>{
+  flights.forEach(f=>{
     const inWindow = f.day <= currentDay && f.day >= winStart;
-    if(!(flightShown[i] && inWindow)) return;
+    if(!inWindow) return;
     const phases = classifyPhases(f.coords, f.dropOverride);
+    const seen = new Set();
     for(let k=0;k<f.coords.length;k++){
-      if(phases[k] === 'drop'){
-        const c = f.coords[k];
-        pts.push([c[0], c[1]]);   // weight defaults to 1 per point
-      }
+      if(phases[k] !== 'drop') continue;
+      const c = f.coords[k];
+      const key = Math.round(c[0]/HEAT_THIN_DEG)+'_'+Math.round(c[1]/HEAT_THIN_DEG);
+      if(seen.has(key)) continue;   // one point per ~250m per flight (per pass)
+      seen.add(key);
+      pts.push([c[0], c[1]]);
     }
   });
   return pts;
 }
 
 function rebuildHeat(){
-  // Cheap no-op when the layer is off: skip all the classification work entirely
-  // so the default (off) state has zero ongoing cost.
+  // Cheap no-op when off, so the default state has zero ongoing cost.
   if(!heatShown){
     if(heatLayer){ map.removeLayer(heatLayer); }
     return;
