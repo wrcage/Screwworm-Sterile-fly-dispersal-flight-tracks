@@ -252,13 +252,23 @@ const survDay     = {};   // oid -> day the surveillance zone first appears
 let SURV47_TRUNC_DAY = Infinity;  // Edwards-only form appears
 let SURV47_FULL_DAY  = Infinity;  // Edwards+Sutton merged form appears
 
+// GeoJSON stores coords as [lon,lat]; Leaflet wants [lat,lon]. A Polygon is
+// an array of rings; a MultiPolygon is an array of polygons (each an array of
+// rings). L.polygon accepts either an array of rings OR an array of polygons,
+// so we just flip lon/lat at the leaf and preserve the surrounding nesting.
+function geomToLatLngs(geom){
+  if(geom.type === 'MultiPolygon'){
+    // [ [ring,ring], [ring], ... ] -> flip each point
+    return geom.coordinates.map(poly => poly.map(ring => ring.map(p => [p[1], p[0]])));
+  }
+  // Polygon: [ ring, ring(hole), ... ]
+  return geom.coordinates.map(ring => ring.map(p => [p[1], p[0]]));
+}
 function buildZoneLayers(fc, paneName, style, dayMap){
   const out={};
   fc.features.forEach(ft=>{
-    // GeoJSON is [lon,lat]; Leaflet wants [lat,lon]
-    const rings = ft.geometry.coordinates.map(r=>r.map(p=>[p[1],p[0]]));
     const oid = ft.properties.oid;
-    out[oid] = L.polygon(rings, Object.assign({pane:paneName}, style));
+    out[oid] = L.polygon(geomToLatLngs(ft.geometry), Object.assign({pane:paneName}, style));
     if(dayMap && ft.properties.appearDay != null) dayMap[oid] = ft.properties.appearDay;
   });
   return out;
@@ -281,7 +291,7 @@ async function loadZones(){
   const t = data.surv47Truncated;
   if(t){
     surv47Trunc = L.polygon(
-      t.geometry.coordinates.map(r=>r.map(p=>[p[1],p[0]])),
+      geomToLatLngs(t.geometry),
       {pane:'survPane',color:'#1d4ed8',weight:1.5,fillColor:'#3b82f6',fillOpacity:.30}
     );
     SURV47_TRUNC_DAY = t.properties.appearDay;        // Edwards alone
