@@ -239,6 +239,7 @@ const fb=[];
 const legend=document.getElementById('legend');
 
 // --- NWS zones: per-polygon layers in dedicated panes (z-ordered) ---
+map.createPane('countyPane'); map.getPane('countyPane').style.zIndex='330';
 map.createPane('survPane'); map.getPane('survPane').style.zIndex='350';
 map.createPane('infPane');  map.getPane('infPane').style.zIndex='360';
 
@@ -363,6 +364,25 @@ async function loadZones(){
   SURV47_FULL_DAY  = survDay[47] != null ? survDay[47] // full merged form
                      : (src.surveillance.features.find(f=>f.properties.oid===47)||{properties:{}}).properties.appearDay;
   updateVis();
+}
+
+// Texas county outlines: a thin always-on reference overlay. Sits below the
+// zone panes (countyPane z330 < survPane z350 < infPane z360) so zone fills
+// keep visual priority where they overlap. Always visible at every zoom so
+// users can see county borders even when the basemap doesn't render them.
+// No legend toggle (always on) — this is reference cartography, not a layer.
+async function loadCounties(){
+  try {
+    const res = await fetch('counties-tx.geojson', {cache:'no-store'});
+    const fc = await res.json();
+    L.geoJSON(fc, {
+      pane: 'countyPane',
+      style: {color:'#4b5563', weight:0.6, opacity:0.55, fill:false},
+      interactive: false
+    }).addTo(map);
+  } catch(err) {
+    console.error('Failed to load counties-tx.geojson:', err);
+  }
 }
 
 // --- Timeline date metadata ---
@@ -667,6 +687,7 @@ syncMasterCheckbox();
 
 updateVis();
 loadZones().catch(err=>console.error('Failed to load zone-history.json:', err));
+loadCounties();
 window.toggleLegend=function(){
   document.getElementById('panel').classList.toggle('collapsed');
 };
