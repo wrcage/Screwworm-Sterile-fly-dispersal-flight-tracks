@@ -264,7 +264,7 @@ let heatLayer = null;
 let heatShown = false;             // default OFF
 const HEAT_COLOR      = '#dc2626'; // red-600
 const HEAT_OPACITY    = 0.25;      // per-pass alpha; overlaps stack visibly (2p≈44%, 4p≈68%, 8p≈90%)
-const HEAT_WIDTH_M    = 3700;      // 2.3 miles — buffer width in meters; scales with zoom below
+const HEAT_WIDTH_M    = 7400;      // 4.6 miles — matches typical pass spacing so adjacent buffers just touch
 const HEAT_MIN_WEIGHT = 2;         // never go thinner than this in px (avoid disappearing at wide zoom)
 const HEAT_REF_LAT    = 29;        // Texas ops centroid, used for meters-per-pixel calc
 
