@@ -259,12 +259,24 @@ map.createPane('infPane');  map.getPane('infPane').style.zIndex='360';
 // stacks (2 passes ≈ 28%, 4 passes ≈ 48%, 8 passes ≈ 73%). One dose = one line,
 // no matter how the plane moved through the cell. Straight repeated coverage
 // now correctly reads darker than a single wandering pass.
-map.createPane('heatPane'); map.getPane('heatPane').style.zIndex='370';
+map.createPane('heatPane'); map.getPane('heatPane').style.zIndex='450';
 let heatLayer = null;
 let heatShown = false;             // default OFF
-const HEAT_COLOR   = '#dc2626';    // red-600
-const HEAT_OPACITY = 0.15;         // per-pass alpha; low so overlaps stack visibly
-const HEAT_WEIGHT  = 8;            // px stroke width; ~drop-swath width visually
+const HEAT_COLOR      = '#dc2626'; // red-600
+const HEAT_OPACITY    = 0.25;      // per-pass alpha; overlaps stack visibly (2p≈44%, 4p≈68%, 8p≈90%)
+const HEAT_WIDTH_M    = 3700;      // 2.3 miles — buffer width in meters; scales with zoom below
+const HEAT_MIN_WEIGHT = 2;         // never go thinner than this in px (avoid disappearing at wide zoom)
+const HEAT_REF_LAT    = 29;        // Texas ops centroid, used for meters-per-pixel calc
+
+// How many pixels represent HEAT_WIDTH_M at the current zoom + Texas latitude.
+// Web Mercator formula: metersPerPx = 40075016.686 * cos(lat) / (256 * 2^zoom).
+// Recomputed on every rebuildHeat so the buffer stays the same on-ground size
+// as the user zooms in/out — instead of pixel-thin at high zoom.
+function heatWeightPx(){
+  const zoom = map.getZoom();
+  const mPerPx = 40075016.686 * Math.cos(HEAT_REF_LAT * Math.PI / 180) / (256 * Math.pow(2, zoom));
+  return Math.max(HEAT_MIN_WEIGHT, HEAT_WIDTH_M / mPerPx);
+}
 
 function rebuildHeat(){
   // Full teardown every time — avoids stale-layer issues that broke toggle-on in
@@ -278,7 +290,8 @@ function rebuildHeat(){
   const winStart = (windowDays >= 99) ? -Infinity : (currentDay - windowDays + 1);
   heatLayer = L.layerGroup();
 
-  const style = {pane:'heatPane', color:HEAT_COLOR, weight:HEAT_WEIGHT,
+  const weight = heatWeightPx();
+  const style = {pane:'heatPane', color:HEAT_COLOR, weight:weight,
                  opacity:HEAT_OPACITY, interactive:false, lineCap:'butt',
                  lineJoin:'round'};
 
@@ -302,6 +315,10 @@ function rebuildHeat(){
 
   heatLayer.addTo(map);
 }
+
+// Re-render the coverage layer whenever the map zooms so the buffer width
+// tracks the current zoom (geographic width stays roughly constant on-ground).
+map.on('zoomend', function(){ if(heatShown) rebuildHeat(); });
 
 
 // Zone layers are populated asynchronously from zone-history.json (see loadZones).
