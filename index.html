@@ -117,7 +117,6 @@
   <div class="hint" style="border-top:none;padding-top:4px;">Contact: William Cage - wrcage@gmail.com</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
 <script>
 let flights = []; // populated asynchronously by initFlights() below
 
@@ -243,66 +242,65 @@ map.createPane('countyPane'); map.getPane('countyPane').style.zIndex='330';
 map.createPane('survPane'); map.getPane('survPane').style.zIndex='350';
 map.createPane('infPane');  map.getPane('infPane').style.zIndex='360';
 
-// --- Drop-density heat map (Leaflet.heat) ---
-// Sits ABOVE the zone panes so the density blob is the focus. OFF by default;
-// toggled from the legend. It shows the density of DROP points only (not
-// transit) and honors the slider day + trailing-window pills, but is INDEPENDENT
-// of the per-flight/tail checkboxes — hiding the flight lines still shows the
-// heat. Drop classification reuses classifyPhases() (same logic that fades
-// transit), so "heat" means "where flies were released," not "where planes flew."
+// --- Drop coverage overlay (semi-transparent polylines with alpha stacking) ---
+// Sits ABOVE the zone panes so coverage is legible over the fills. OFF by default;
+// toggled from the legend. Shows the density of DROP work only (transit excluded),
+// honors the slider day + trailing-window pills, but is INDEPENDENT of the
+// per-flight/tail checkboxes — hiding flight lines still shows the coverage.
 //
-// Density tuning: each flight's drop points are thinned to ~1 per ~250 m so a
-// single pass lays down an even, sparse line rather than a saturated blob (a slow
-// plane logs many points per second). Darkening then comes from SEPARATE passes
-// overlapping within the blur radius — so one pass reads pale and repeatedly
-// worked areas saturate to crimson. The low `max` + transparent low end of the
-// gradient spread the scale so the gradient is visible instead of all-or-nothing.
+// Why this approach vs a point-based heat map: the previous Leaflet.heat
+// implementation put a Gaussian at each track point, which made TURNS (where
+// the plane bunches spatially) hotter than STRAIGHT PASSES, even though a
+// straight pass is one dose of drop and so is a U-turn. It also failed to
+// distinguish 1 pass from 4 overlapping passes.
+//
+// The fix: draw each contiguous drop segment as a thick red polyline with LOW
+// opacity (~15%). When two passes overlap on the same ground, the canvas alpha
+// stacks (2 passes ≈ 28%, 4 passes ≈ 48%, 8 passes ≈ 73%). One dose = one line,
+// no matter how the plane moved through the cell. Straight repeated coverage
+// now correctly reads darker than a single wandering pass.
 map.createPane('heatPane'); map.getPane('heatPane').style.zIndex='370';
 let heatLayer = null;
-let heatShown = false;   // default OFF
-const HEAT_THIN_DEG = 0.00225;  // ~250 m: thin each pass to one point per cell
-const HEAT_GRADIENT = {0.0:'rgba(157,2,8,0)', 0.15:'rgba(253,160,80,0.55)',
-                       0.4:'#f3722c', 0.7:'#e01e37', 1.0:'#9d0208'};
-const HEAT_OPTIONS = {radius:18, blur:22, max:9, minOpacity:0.0,
-                      maxZoom:11, pane:'heatPane', gradient:HEAT_GRADIENT};
+let heatShown = false;             // default OFF
+const HEAT_COLOR   = '#dc2626';    // red-600
+const HEAT_OPACITY = 0.15;         // per-pass alpha; low so overlaps stack visibly
+const HEAT_WEIGHT  = 8;            // px stroke width; ~drop-swath width visually
 
-function collectDropPoints(){
-  // [lat,lon] for every DROP point of flights on/before the slider day and within
-  // the trailing window. NOT gated by flightShown — heat is independent of the
-  // flight-line checkboxes. Each flight is thinned to ~1 pt per HEAT_THIN_DEG cell
-  // so a single pass contributes evenly and density reflects overlapping passes.
+function rebuildHeat(){
+  // Full teardown every time — avoids stale-layer issues that broke toggle-on in
+  // the previous Leaflet.heat implementation.
+  if(heatLayer){
+    map.removeLayer(heatLayer);
+    heatLayer = null;
+  }
+  if(!heatShown) return;
+
   const winStart = (windowDays >= 99) ? -Infinity : (currentDay - windowDays + 1);
-  const pts = [];
+  heatLayer = L.layerGroup();
+
+  const style = {pane:'heatPane', color:HEAT_COLOR, weight:HEAT_WEIGHT,
+                 opacity:HEAT_OPACITY, interactive:false, lineCap:'butt',
+                 lineJoin:'round'};
+
   flights.forEach(f=>{
     const inWindow = f.day <= currentDay && f.day >= winStart;
     if(!inWindow) return;
     const phases = classifyPhases(f.coords, f.dropOverride);
-    const seen = new Set();
-    for(let k=0;k<f.coords.length;k++){
-      if(phases[k] !== 'drop') continue;
-      const c = f.coords[k];
-      const key = Math.round(c[0]/HEAT_THIN_DEG)+'_'+Math.round(c[1]/HEAT_THIN_DEG);
-      if(seen.has(key)) continue;   // one point per ~250m per flight (per pass)
-      seen.add(key);
-      pts.push([c[0], c[1]]);
+    // Walk the coords and emit one polyline per contiguous drop run.
+    let seg = null;
+    for(let i = 0; i < f.coords.length; i++){
+      if(phases[i] === 'drop'){
+        if(!seg) seg = [];
+        seg.push([f.coords[i][0], f.coords[i][1]]);
+      } else if(seg){
+        if(seg.length >= 2) L.polyline(seg, style).addTo(heatLayer);
+        seg = null;
+      }
     }
+    if(seg && seg.length >= 2) L.polyline(seg, style).addTo(heatLayer);
   });
-  return pts;
-}
 
-function rebuildHeat(){
-  // Cheap no-op when off, so the default state has zero ongoing cost.
-  if(!heatShown){
-    if(heatLayer){ map.removeLayer(heatLayer); }
-    return;
-  }
-  const pts = collectDropPoints();
-  if(heatLayer){
-    heatLayer.setLatLngs(pts);
-    if(!map.hasLayer(heatLayer)) heatLayer.addTo(map);
-  } else {
-    heatLayer = L.heatLayer(pts, HEAT_OPTIONS).addTo(map);
-  }
+  heatLayer.addTo(map);
 }
 
 
@@ -496,15 +494,16 @@ legend.insertAdjacentHTML('beforeend','<div class="achdr">NWS zones (TAHC)</div>
   legend.appendChild(row);
 });
 
-// Drop-density heat map toggle (off by default). Shows where sterile-fly DROPS
-// are densest among the flights currently visible (honors slider + window pills).
+// Drop-coverage overlay toggle (off by default). Shows where sterile-fly DROP
+// work overlaps — each pass is a semi-transparent red line, so multiple passes
+// over the same ground stack visibly (see rebuildHeat comments).
 legend.insertAdjacentHTML('beforeend','<div class="achdr">Drop density</div>');
 (function(){
   const row=document.createElement('div'); row.className='row';
   row.innerHTML='<input type="checkbox" id="heatToggle">'+
     '<span class="sw" style="border-top:none;width:24px;height:10px;border-radius:2px;'+
-      'background:linear-gradient(90deg,#fda050,#f3722c,#e01e37,#9d0208);margin-right:7px;"></span>'+
-    '<span class="lbl" id="heatLbl">Drop heat map</span>';
+      'background:linear-gradient(90deg,rgba(220,38,38,0.18),rgba(220,38,38,0.55),rgba(220,38,38,0.9));margin-right:7px;"></span>'+
+    '<span class="lbl" id="heatLbl">Drop coverage</span>';
   legend.appendChild(row);
 })();
 
