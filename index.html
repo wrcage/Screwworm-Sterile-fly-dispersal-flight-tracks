@@ -91,17 +91,19 @@
 <div id="timeline"><div id="t-row">
   <span class="t-edge" id="t-start-label">May 30</span>
   <div id="t-track">
-    <div id="t-bubble">Jul 1</div>
+    <div id="t-bubble">&hellip;</div>
     <div id="t-ticks"></div>
-    <input type="range" id="t-slider" min="0" max="32" value="32" step="1">
+    <!-- min/max/value are placeholders; the initFlights loader recomputes them
+         from real flight data as soon as flights-history.json arrives. -->
+    <input type="range" id="t-slider" min="0" max="1" value="1" step="1">
   </div>
-  <span class="t-edge" id="t-max-label">Jul 1</span>
+  <span class="t-edge" id="t-max-label">&hellip;</span>
 </div>
 <div id="t-window">
   <span class="t-winlabel">Flights:</span>
-  <span class="winpill active" data-win="99">All</span>
+  <span class="winpill" data-win="99">All</span>
   <span class="winpill" data-win="14">14d</span>
-  <span class="winpill" data-win="7">7d</span>
+  <span class="winpill active" data-win="7">7d</span>
   <span class="winpill" data-win="3">3d</span>
   <span class="winpill" data-win="1">1d</span>
 </div></div>
@@ -110,7 +112,7 @@
 <div class="panel" id="panel">
   <button class="panelclose" onclick="toggleLegend()" aria-label="Hide legend">&times;</button>
   <h1>Sterile-fly dispersal tracks</h1>
-  <div class="sub">USDA screwworm SIT &middot; Dynamic Aviation &middot; FlightAware logs</div>
+  <div class="sub">USDA screwworm SIT &middot; Dynamic Aviation &middot; Flightradar24</div>
   <div class="allrow"><label><input type="checkbox" id="allFlightsCb" checked> All flights</label></div>
   <div id="legend"></div>
   <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Yellow = infested zone, blue = surveillance (TAHC). Green = flight start, red = end. Basemap switch is top-right.</div>
@@ -226,10 +228,14 @@ const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Wo
 const labels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',{attribution:'Labels &copy; Esri',maxZoom:19});
 
 const map = L.map('map',{preferCanvas:true,layers:[topo]}).setView([25.5,-99],6);
+// Basemap picker: expanded by default on desktop (screen wide enough that the
+// full row of options is helpful), collapsed to a hamburger-style icon on
+// mobile (≤640px) so it doesn't crowd the map. Tap the icon to expand.
+const basemapCollapsed = window.matchMedia('(max-width:640px)').matches;
 L.control.layers(
   {"Topographic":topo,"Street map":streets,"Satellite":sat},
   {"Labels & boundaries (for satellite)":labels},
-  {collapsed:false,position:'topright'}).addTo(map);
+  {collapsed:basemapCollapsed,position:'topright'}).addTo(map);
 map.on('baselayerchange',e=>{ if(e.name==="Satellite" && !map.hasLayer(labels)) labels.addTo(map); });
 
 let all=[];
@@ -401,17 +407,37 @@ async function loadCounties(){
 }
 
 // --- Timeline date metadata ---
-// Day 0 = May 30, last day = Jul 1 (33 days inclusive)
-const DAY_LABELS = ['May 30','May 31','Jun 1','Jun 2','Jun 3','Jun 4','Jun 5',
-                    'Jun 6','Jun 7','Jun 8','Jun 9','Jun 10','Jun 11','Jun 12','Jun 13',
-                    'Jun 14','Jun 15','Jun 16','Jun 17','Jun 18','Jun 19','Jun 20','Jun 21','Jun 22',
-                    'Jun 23','Jun 24','Jun 25','Jun 26','Jun 27','Jun 28','Jun 29','Jun 30','Jul 1'];
+// Day 0 is May 30, 2026, and always will be. The end of the range grows as
+// new flight days are appended to flights-history.json — rebuildDayLabels()
+// is called after flights load with the max day index it saw in the data, so
+// there is nothing to hand-edit here when the FR24 updater adds a new day.
+let DAY_LABELS = [];
+const DAY_ZERO_YEAR  = 2026;
+const DAY_ZERO_MONTH = 4;   // May (Date.UTC uses 0-indexed months)
+const DAY_ZERO_DATE  = 30;
+const _MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function rebuildDayLabels(maxDay){
+  const zero = Date.UTC(DAY_ZERO_YEAR, DAY_ZERO_MONTH, DAY_ZERO_DATE);
+  const DAY_MS = 86400000;
+  const out = [];
+  for(let i = 0; i <= maxDay; i++){
+    const d = new Date(zero + i * DAY_MS);
+    out.push(_MONTH_NAMES[d.getUTCMonth()] + ' ' + d.getUTCDate());
+  }
+  DAY_LABELS = out;
+}
 
 // --- Visibility state ---
 const flightShown = []; // populated by initFlights() after fetch
 const zoneShown   = {inf:true, surv:true};
-let currentDay    = 32;
-let windowDays    = 99;   // trailing window for FLIGHTS only; 99 = show all (no trailing cutoff)
+// Set to 0 as a safe placeholder; overwritten as soon as flights load and we
+// know how far the timeline actually reaches.
+let currentDay    = 0;
+// Default trailing window on FIRST load — 7 days is enough context to see the
+// current pattern of operations without the map getting crowded by the whole
+// history. Users can widen to 14d or All from the pills. Zones ignore this
+// setting entirely (they're always cumulative up to the slider day).
+let windowDays    = 7;
 
 function setVis(layer, want){
   const has = map.hasLayer(layer);
@@ -459,10 +485,28 @@ function updateVis(){
     // Continue with empty flights — at least basemap and zones still render.
   }
 
+// Compute how far the timeline needs to reach based on real flight data.
+// If flights loaded, the biggest day index in the JSON is the latest day.
+// If they failed to load (fetch error), fall back to today's UTC day index
+// so the slider still shows a sensible range and zones can still render.
+let maxDay = 0;
+if(flights.length){
+  flights.forEach(f => { if(f.day > maxDay) maxDay = f.day; });
+} else {
+  const zeroMs = Date.UTC(DAY_ZERO_YEAR, DAY_ZERO_MONTH, DAY_ZERO_DATE);
+  maxDay = Math.max(0, Math.floor((Date.now() - zeroMs) / 86400000));
+}
+rebuildDayLabels(maxDay);
+currentDay = maxDay;
+
 // Slider wiring
 const slider = document.getElementById('t-slider');
 const bubble = document.getElementById('t-bubble');
 const ticksEl = document.getElementById('t-ticks');
+// The HTML slider has placeholder min/max/value attributes so it renders
+// before this script runs; override them now that we know the real range.
+slider.max = maxDay;
+slider.value = maxDay;
 document.getElementById('t-start-label').textContent = DAY_LABELS[0];
 document.getElementById('t-max-label').textContent   = DAY_LABELS[DAY_LABELS.length-1];
 
