@@ -33,9 +33,15 @@ import urllib.request
 import urllib.error
 
 BASE = "https://fr24api.flightradar24.com/api"
+# NOTE ON User-Agent: FR24's API sits behind Cloudflare, and Cloudflare's WAF
+# rejects requests that use Python's default "Python-urllib/3.x" User-Agent —
+# it returns a 403 with an HTML page that LOOKS like a "planned maintenance"
+# notice, but it's really a bot-block. Setting an explicit, descriptive UA
+# gets us past that layer so the API itself can respond.
 COMMON_HEADERS = {
     "Accept": "application/json",
     "Accept-Version": "v1",
+    "User-Agent": "screwworm-sterile-fly-map/1.0 (+https://github.com/wrcage/Screwworm-Sterile-fly-dispersal-flight-tracks)",
 }
 
 
@@ -118,17 +124,29 @@ def main():
     if code is None:
         print("\nAborting: network failure on summary call.")
         sys.exit(2)
-    if code in (401, 403):
-        print("\nAUTH FAIL. The key was rejected. Full body:")
-        print(body[:800])
-        # Try /usage anyway so the log shows the same error surface consistently.
+    if code != 200:
+        # Distinguish two very different failure modes:
+        #   * HTML body: request was blocked/deflected before reaching the API
+        #     (usually a Cloudflare/WAF block, sometimes real maintenance).
+        #     The body starts with "<!DOCTYPE" or "<html".
+        #   * JSON body: the API itself is refusing us — genuine auth issue,
+        #     wrong endpoint, bad parameter, credits exhausted, etc. In this
+        #     case FR24 will return a JSON error object with useful details.
+        looks_html = (body or "").lstrip().lower().startswith(("<!doctype", "<html"))
+        if looks_html:
+            print("\nBLOCKED BEFORE API. Response was HTML, not JSON — this is")
+            print("almost always a WAF/Cloudflare block (frequently disguised")
+            print("as a 'planned maintenance' page). Not an auth failure.")
+        elif code in (401, 403):
+            print("\nAUTH REJECTED by the API. Check the FR24_API_KEY secret.")
+        else:
+            print("\nUnexpected status " + str(code) + " from the API.")
+        print("Body (first 800 chars):")
+        print((body or "")[:800])
+        # Try /usage as a second data point — same result confirms it's a
+        # transport-level issue, different result narrows it to the summary call.
         call("/usage")
         sys.exit(3)
-    if code != 200:
-        print("\nUnexpected status " + str(code) + ". Full body:")
-        print(body[:800])
-        call("/usage")
-        sys.exit(4)
 
     flights = (summary or {}).get("data") or []
     print("\nSummary returned " + str(len(flights)) + " flight(s) for " +
