@@ -198,9 +198,18 @@ def main():
         print("this tail flew on a specific day within the last 30 days.")
 
     # --- Step 3: credit usage --------------------------------------------
+    # /usage tells us cumulative credit spend by endpoint for the current
+    # billing period. Print the full body so we can see exact per-endpoint
+    # cost of this test — that's the number we'll use to budget the daily
+    # updater against our 30,000-credit/month Explorer allowance.
     print("\n" + "-" * 60)
     print("Credit usage after this test:")
-    call("/usage")
+    _, usage_body, usage_json = call("/usage")
+    if usage_json is not None:
+        print(json.dumps(usage_json, indent=2))
+    else:
+        print("(usage response was not JSON; raw body first 400 chars:)")
+        print((usage_body or "")[:400])
 
     print("\n" + "=" * 60)
     print("Test complete. Paste the full log above back to the assistant.")
