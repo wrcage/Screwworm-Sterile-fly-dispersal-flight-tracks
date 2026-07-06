@@ -1,0 +1,49 @@
+name: FR24 test
+
+# One-shot smoke test for the Flightradar24 API. Manual only — no schedule.
+#
+# This does NOT modify the site or any repo files. It just makes a few API
+# calls and prints results to the run log so we can:
+#   1) confirm FR24_API_KEY is valid,
+#   2) confirm a real query for one of our sterile-fly aircraft returns
+#      useful data (flight summary + track), and
+#   3) see how many credits the round trip actually costs before we build
+#      the daily updater.
+#
+# To run: repo -> Actions tab -> "FR24 test" in the left sidebar -> "Run
+# workflow" button on the right. You can override the tail / date defaults
+# from the popup.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tail:
+        description: "Tail number to query (e.g. N75G)."
+        type: string
+        default: "N75G"
+      date:
+        description: "Date to query, UTC (YYYY-MM-DD). Leave blank for yesterday."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run FR24 smoke test
+        env:
+          FR24_API_KEY: ${{ secrets.FR24_API_KEY }}
+          TARGET_TAIL:  ${{ inputs.tail }}
+          TARGET_DATE:  ${{ inputs.date }}
+        run: python fr24_test.py
