@@ -39,10 +39,13 @@ on:
         type: boolean
         default: true
 
-  # Daily automation — UNCOMMENT the two lines below (and the `schedule:`
-  # header) once the initial backfill is done and manual runs look clean.
-  # schedule:
-  #   - cron: "0 6 * * *"   # 06:00 UTC daily (~01:00 Central)
+  # Daily automation: runs every day at 19:00 UTC, which is 2:00 PM Central
+  # during daylight saving (CDT, ~Mar–Nov) and 1:00 PM Central in winter
+  # (CST). GitHub cron is always UTC and does not follow DST, so the local
+  # time shifts by an hour across the year — both times are after the day's
+  # drops finish, so it captures the same day's drop flights either way.
+  schedule:
+    - cron: "0 19 * * *"
 
 permissions:
   contents: write   # to commit flights-history.json
