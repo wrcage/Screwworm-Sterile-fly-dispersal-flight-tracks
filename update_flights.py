@@ -124,7 +124,12 @@ AIRPORTS = {
     "KPRS": (29.6344, -104.3617),  # Presidio Lely International
     "1E2":  (29.4502, -103.3985),  # Terlingua Ranch (Big Bend)
     "89TE": (29.2683, -103.6889),  # Lajitas International (Big Bend)
+    "KJCT": (30.5112, -99.7628),   # Junction / Kimble County
+    "KCZT": (28.5222, -99.8237),   # Carrizo Springs / Dimmit County
+    "KLRD": (27.5438, -99.4616),   # Laredo International
+    "KMFE": (26.1758, -98.2386),   # McAllen International
     "5T9":  (28.8656, -100.5051),  # Eagle Pass
+    "K5T9": (28.8656, -100.5051),  # Eagle Pass (FR24 sometimes K-prefixes it)
     "MMTM": (22.2964, -97.8656),   # Tampico
     "MMNL": (27.4437, -99.5705),   # Nuevo Laredo
     "MMMY": (25.7785, -100.1075),  # Monterrey (Escobedo / NTR)
@@ -152,7 +157,12 @@ FRIENDLY = {
     "KPRS": "Presidio",
     "1E2":  "Terlingua Ranch",
     "89TE": "Lajitas",
+    "KJCT": "Junction",
+    "KCZT": "Carrizo Springs",
+    "KLRD": "Laredo",
+    "KMFE": "McAllen",
     "5T9":  "Eagle Pass",
+    "K5T9": "Eagle Pass",
     "MMTM": "Tampico",
     "MMNL": "Nuevo Laredo",
     "MMMY": "Monterrey",       # NTR — the historical data uses just "Monterrey"
