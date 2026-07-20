@@ -118,6 +118,12 @@ AIRPORTS = {
     "KERV": (29.9767, -99.0855),   # Kerrville
     "KHOB": (32.6875, -103.2170),  # Hobbs NM
     "KCVB": (29.3421, -98.8515),   # Castroville
+    "KE38": (30.3842, -103.6836),  # Alpine-Casparis (Big Bend staging)
+    "KMRF": (30.3711, -104.0175),  # Marfa
+    "KFST": (30.9153, -102.9128),  # Fort Stockton-Pecos County
+    "KPRS": (29.6344, -104.3617),  # Presidio Lely International
+    "1E2":  (29.4502, -103.3985),  # Terlingua Ranch (Big Bend)
+    "89TE": (29.2683, -103.6889),  # Lajitas International (Big Bend)
     "5T9":  (28.8656, -100.5051),  # Eagle Pass
     "MMTM": (22.2964, -97.8656),   # Tampico
     "MMNL": (27.4437, -99.5705),   # Nuevo Laredo
@@ -140,6 +146,12 @@ FRIENDLY = {
     "KERV": "Kerrville",
     "KHOB": "Hobbs NM",
     "KCVB": "Castroville",
+    "KE38": "Alpine",
+    "KMRF": "Marfa",
+    "KFST": "Fort Stockton",
+    "KPRS": "Presidio",
+    "1E2":  "Terlingua Ranch",
+    "89TE": "Lajitas",
     "5T9":  "Eagle Pass",
     "MMTM": "Tampico",
     "MMNL": "Nuevo Laredo",
@@ -172,7 +184,13 @@ def log(msg):
 
 
 def parse_iso(ts):
-    """Parse an FR24 ISO timestamp like '2026-06-30T11:28:41Z' into a UTC datetime."""
+    """Parse an FR24 ISO timestamp like '2026-06-30T11:28:41Z' into a UTC
+    datetime. Raises ValueError on None or empty input so callers that wrap
+    this in a try/except(ValueError) handle a missing timestamp cleanly — FR24
+    can return a null datetime_landed for a flight that hasn't been finalized
+    (e.g. still airborne, or landing not yet processed)."""
+    if not ts:
+        raise ValueError("empty or missing timestamp")
     if ts.endswith("Z"):
         ts = ts[:-1] + "+00:00"
     return dt.datetime.fromisoformat(ts)
@@ -559,8 +577,14 @@ def main(argv=None):
                 t0 = parse_iso(takeoff)
                 t1 = parse_iso(landing)
                 dur_h = (t1 - t0).total_seconds() / 3600.0
-            except (TypeError, ValueError):
-                log("    skip: unparseable timestamps for fr24_id " + str(fid))
+            except (TypeError, ValueError, AttributeError):
+                # Most common cause: datetime_landed is null because the flight
+                # wasn't finalized when we queried (still airborne, or FR24
+                # hasn't closed it out). We can't compute duration, so we can't
+                # tell drop from ferry — skip safely. A later run (or the next
+                # day's run) will pick it up once FR24 finalizes it.
+                log("    skip: missing/invalid timestamps for fr24_id " + str(fid)
+                    + " (takeoff=" + repr(takeoff) + " landing=" + repr(landing) + ")")
                 continue
 
             if dur_h < FERRY_HOURS_MAX:
