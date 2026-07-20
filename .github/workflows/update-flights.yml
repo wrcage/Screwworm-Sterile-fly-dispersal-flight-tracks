@@ -1,0 +1,125 @@
+name: Update flights (FR24)
+
+# Fetches yesterday's completed flights for the tracked sterile-fly aircraft
+# from the Flightradar24 API and appends the drop missions (duration >= 3.5h)
+# to flights-history.json. Ferry legs are identified from the takeoff/landing
+# timestamps and skipped without spending a track-fetch credit.
+#
+# On first setup:
+#   1. Run manually with dry_run=true and a single --date to inspect the
+#      script's decisions on one known-good day.
+#   2. Then flip dry_run to false and repeat, verifying live.
+#   3. Backfill the rest of the Jul 2 -> yesterday range via the date_from /
+#      date_to inputs.
+#   4. Once backfill is complete and the map looks right, UNCOMMENT the
+#      schedule block at the bottom of the `on:` section to turn on the
+#      daily cron.
+#
+# On failure this opens a GitHub issue with a link to the run — same pattern
+# as the zone updater. The map is unaffected because flights-history.json is
+# only touched on a successful, committed run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Single UTC date to fetch (YYYY-MM-DD). Blank = yesterday UTC. Ignored if date_from/date_to are set."
+        type: string
+        default: ""
+      date_from:
+        description: "Range start (YYYY-MM-DD UTC). Requires date_to."
+        type: string
+        default: ""
+      date_to:
+        description: "Range end inclusive (YYYY-MM-DD UTC). Requires date_from."
+        type: string
+        default: ""
+      dry_run:
+        description: "Dry run (no commit)?"
+        type: boolean
+        default: true
+
+  # Daily automation — UNCOMMENT the two lines below (and the `schedule:`
+  # header) once the initial backfill is done and manual runs look clean.
+  # schedule:
+  #   - cron: "0 6 * * *"   # 06:00 UTC daily (~01:00 Central)
+
+permissions:
+  contents: write   # to commit flights-history.json
+  issues: write     # to open an alert issue on failure
+
+concurrency:
+  group: update-flights
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run FR24 flight updater
+        id: run
+        env:
+          FR24_API_KEY: ${{ secrets.FR24_API_KEY }}
+          # Same pattern as the zone updater: COMMIT=1 for actual writes, else dry run.
+          # Scheduled runs (github.event_name != workflow_dispatch) always commit.
+          COMMIT: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '0' || '1' }}
+        run: |
+          set -euo pipefail
+          ARGS=""
+          if [ -n "${{ inputs.date_from }}" ] && [ -n "${{ inputs.date_to }}" ]; then
+            ARGS="--date-from ${{ inputs.date_from }} --date-to ${{ inputs.date_to }}"
+          elif [ -n "${{ inputs.date }}" ]; then
+            ARGS="--date ${{ inputs.date }}"
+          fi
+          if [ "$COMMIT" = "1" ]; then
+            ARGS="$ARGS --commit"
+          fi
+          echo "Running: python update_flights.py $ARGS"
+          python update_flights.py $ARGS
+
+      - name: Commit & push if changed
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        run: |
+          if [[ -n "$(git status --porcelain flights-history.json)" ]]; then
+            git config user.name  "flight-update-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add flights-history.json
+            git commit -m "Auto: FR24 flight update ($(date -u +%Y-%m-%d))"
+            git push
+            echo "Committed flights-history.json update."
+          else
+            echo "No file change; nothing to commit."
+          fi
+
+      - name: Open an issue on failure
+        if: failure()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `FR24 flight updater failed (${new Date().toISOString().slice(0,10)})`,
+              body: [
+                "The FR24 flight updater run failed.",
+                "",
+                "Common causes: the FR24 API key was rejected or credits were exhausted,",
+                "the Cloudflare-fronted API returned a maintenance/block page, or a data",
+                "shape changed. The map is unaffected — it keeps serving the last good",
+                "flights-history.json.",
+                "",
+                `[View the failed run](${run})`,
+                "",
+                "If this repeats for several days, check the API key and remaining credits",
+                "in the Flightradar24 portal before assuming the script itself is broken."
+              ].join("\n")
+            });
