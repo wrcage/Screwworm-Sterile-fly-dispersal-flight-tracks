@@ -1,0 +1,28 @@
+name: Probe Tableau dashboard
+
+# Read-only: finds a Tableau dashboard embedded in a page and tries its CSV
+# export. Changes nothing in the repo.
+on:
+  workflow_dispatch:
+    inputs:
+      page:
+        description: "Web page that embeds the dashboard"
+        type: string
+        required: true
+      extra:
+        description: "Optional Tableau view URL(s) to try, space-separated"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python probe_tableau.py "${{ inputs.page }}" ${{ inputs.extra }}
