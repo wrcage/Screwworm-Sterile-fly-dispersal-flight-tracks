@@ -64,6 +64,20 @@ def describe_layer(title, url):
     try:
         cnt = get(url + "/query", where="1=1", returnCountOnly="true", f="json").get("count")
         print("    feature count: %s" % cnt)
+        gj = get(url + "/query", where="1=1", outFields="*", outSR="4326", f="geojson")
+        import math
+        for ft in gj.get("features", []):
+            g = ft.get("geometry") or {}
+            pts = []
+            def walk(c):
+                if c and isinstance(c[0], (int, float)): pts.append(c)
+                else:
+                    for x in c: walk(x)
+            walk(g.get("coordinates") or [])
+            if pts:
+                print("    geom %s: %d vertices, lon %.2f..%.2f lat %.2f..%.2f" % (
+                    g.get("type"), len(pts), min(p[0] for p in pts), max(p[0] for p in pts),
+                    min(p[1] for p in pts), max(p[1] for p in pts)))
         rows = get(url + "/query", where="1=1", outFields="*", returnGeometry="false",
                    resultRecordCount=8, f="json").get("features", [])
         for r in rows:
@@ -91,6 +105,10 @@ def main():
         print("follows web map: " + wm)
         m2, d2 = item(host, wm)
         print("WEBMAP %s: title=%r modified=%s" % (wm, m2.get("title"), m2.get("modified")))
+        for L in d2.get("operationalLayers", []):
+            print("  op layer: title=%r visible=%s url=%s sublayers=%s" % (
+                L.get("title"), L.get("visibility"), L.get("url"),
+                [(x.get("title"), x.get("visibility")) for x in L.get("layers", [])] or ""))
         found += layer_urls(d2, [])
     if not found:
         print("No layer URLs found. Raw data keys: " + str(list(data.keys()) if isinstance(data, dict) else type(data)))
