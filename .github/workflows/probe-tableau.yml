@@ -37,4 +37,12 @@ jobs:
           EXTRA: ${{ inputs.extra }}
         run: |
           pip install -q tableauscraper
-          for u in $EXTRA; do python probe_tableau2.py "$u"; done
+          for u in $EXTRA; do python probe_tableau2.py "$u" || true; done
+      - name: Inspect via headless browser
+        if: ${{ inputs.extra != '' }}
+        env:
+          EXTRA: ${{ inputs.extra }}
+        run: |
+          pip install -q playwright
+          python -m playwright install --with-deps chromium > /dev/null
+          for u in $EXTRA; do python probe_tableau3.py "$u"; done
