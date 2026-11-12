@@ -99,6 +99,35 @@
     pointer-events:none;}
   #t-bubble::after{content:'';position:absolute;top:100%;left:50%;
     transform:translateX(-50%);border:4px solid transparent;border-top-color:#111;}
+
+  /* --- Support this map ---------------------------------------------- */
+  .support-btn{background:#fff;border:none;border-radius:8px;padding:6px 10px;
+    font:600 12px -apple-system,Segoe UI,Roboto,sans-serif;color:#be123c;cursor:pointer;
+    box-shadow:0 1px 5px rgba(0,0,0,.35);touch-action:manipulation;}
+  .support-btn:hover{background:#fff1f2;}
+  .support-link{color:#be123c;font-weight:600;cursor:pointer;text-decoration:none;}
+  #support-overlay{position:fixed;inset:0;z-index:3000;background:rgba(15,23,42,.45);
+    display:none;align-items:center;justify-content:center;padding:16px;}
+  #support-overlay.open{display:flex;}
+  #support-card{background:#fff;border-radius:14px;max-width:360px;width:100%;
+    padding:18px 18px 14px;position:relative;box-shadow:0 10px 30px rgba(0,0,0,.35);
+    font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;color:#1f2937;
+    max-height:calc(100vh - 32px);overflow:auto;}
+  #support-card h3{margin:0 0 8px;font-size:17px;}
+  #support-card p{margin:0 0 12px;}
+  #support-close{position:absolute;top:8px;right:10px;border:none;background:none;
+    font-size:22px;line-height:1;color:#6b7280;cursor:pointer;padding:4px 6px;}
+  .amounts{display:flex;gap:8px;margin:4px 0 10px;}
+  .amounts a{flex:1;text-align:center;text-decoration:none;font-weight:700;
+    padding:10px 0;border-radius:10px;background:#008cff;color:#fff;font-size:15px;
+    touch-action:manipulation;}
+  .amounts a.other{background:#e0f2fe;color:#0369a1;}
+  .support-meta{font-size:12px;color:#6b7280;margin:0 0 6px;}
+  #zelle-row{display:none;font-size:13px;margin:0 0 8px;align-items:center;gap:6px;flex-wrap:wrap;}
+  #zelle-row button{border:1px solid #cbd5e1;background:#f8fafc;border-radius:6px;
+    padding:2px 8px;font-size:12px;cursor:pointer;}
+  .support-later{display:block;margin:6px auto 0;border:none;background:none;color:#6b7280;
+    font-size:12px;cursor:pointer;text-decoration:underline;}
 </style></head>
 <body>
 <div id="timeline"><div id="t-row">
@@ -126,6 +155,26 @@
   <span class="winpill" data-win="1">1d</span>
 </div></div>
 <div id="map"></div>
+<div id="support-overlay" role="dialog" aria-modal="true" aria-labelledby="support-title">
+  <div id="support-card">
+    <button id="support-close" type="button" aria-label="Close">&times;</button>
+    <h3 id="support-title">Support this map</h3>
+    <p>I come from a ranching family, so this outbreak matters to me, and I'm glad the map
+       helps people follow it. I run it on my own time and cover the data, hosting and
+       software costs myself, and I'm happy to keep doing that. If it's been useful and
+       you'd like to help keep it running, any amount is much appreciated.</p>
+    <div class="amounts">
+      <a data-amt="2" target="_blank" rel="noopener">$2</a>
+      <a data-amt="5" target="_blank" rel="noopener">$5</a>
+      <a data-amt="10" target="_blank" rel="noopener">$10</a>
+      <a data-amt="" class="other" target="_blank" rel="noopener">Other</a>
+    </div>
+    <p class="support-meta">Venmo <b>@William-Cage</b></p>
+    <div id="zelle-row">Zelle: <b id="zelle-id"></b> <button type="button" id="zelle-copy">Copy</button></div>
+    <p class="support-meta"><i>Personal contributions, not tax-deductible. Thank you!</i></p>
+    <button class="support-later" type="button" id="support-later">Maybe later</button>
+  </div>
+</div>
 <button class="legtoggle" id="legtoggle" onclick="toggleLegend()" aria-label="Show legend">&#9776;</button>
 <div class="panel" id="panel">
   <button class="panelclose" onclick="toggleLegend()" aria-label="Hide legend">&times;</button>
@@ -135,6 +184,7 @@
   <div id="legend"></div>
   <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Dashed lime green = non-US aircraft (Guatemalan tails flying out of Tampico). Yellow = infested zone, blue = surveillance. Sources: Texas = TAHC; New Mexico = NM Livestock Board / NMSU map; Arizona = public Google My Map "New World Screwworm" (unofficial, no stated author). Green = flight start, red = end. Basemap switch is top-right.</div>
   <div class="hint" style="border-top:none;padding-top:4px;">Contact: William Cage - wrcage@gmail.com</div>
+  <div class="hint" style="border-top:none;padding-top:2px;"><a class="support-link" onclick="openSupport('legend')">&#9829; Support this map</a></div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
@@ -807,6 +857,78 @@ if(window.matchMedia('(max-width:640px)').matches){
   map.fitBounds(target, narrow ? {padding:[30,30]}
                                : {paddingTopLeft:[400,40], paddingBottomRight:[40,110]});
 })();
+})();
+</script>
+<script>
+// --- Support this map -------------------------------------------------------
+// Card with Venmo amount buttons (+ optional Zelle). Opens from the heart
+// button / legend link, and ONCE automatically after 3 minutes of visible time
+// on the page. Closing it suppresses the auto-show for 30 days; tapping an
+// amount suppresses it for 180 days. Browser storage can be unavailable
+// (private mode etc.), so every access is wrapped; worst case it shows again.
+(function(){
+  const VENMO_USER = 'William-Cage';
+  const ZELLE_ID   = '';              // email/phone for Zelle; '' hides the line
+  const NOTE       = 'Screwworm map support';
+  const AUTO_MS    = 3 * 60 * 1000;
+  const DAY        = 86400000;
+  const overlay = document.getElementById('support-overlay');
+  const store = {
+    get(k){ try { return +localStorage.getItem(k) || 0; } catch(e){ return 0; } },
+    set(k,v){ try { localStorage.setItem(k, String(v)); } catch(e){} }
+  };
+  const track = path => { try { window.goatcounter && window.goatcounter.count &&
+    window.goatcounter.count({path: path, title: path, event: true}); } catch(e){} };
+
+  overlay.querySelectorAll('.amounts a').forEach(a=>{
+    const amt = a.getAttribute('data-amt');
+    a.href = 'https://venmo.com/' + VENMO_USER + '?txn=pay' +
+             (amt ? '&amount=' + amt : '') + '&note=' + encodeURIComponent(NOTE);
+    a.addEventListener('click', ()=>{
+      store.set('supportDonatedAt', Date.now());
+      track('support-venmo-' + (amt || 'other'));
+    });
+  });
+  if(ZELLE_ID){
+    document.getElementById('zelle-row').style.display = 'flex';
+    document.getElementById('zelle-id').textContent = ZELLE_ID;
+    document.getElementById('zelle-copy').addEventListener('click', ev=>{
+      try { navigator.clipboard.writeText(ZELLE_ID); ev.target.textContent = 'Copied'; } catch(e){}
+      store.set('supportDonatedAt', Date.now()); track('support-zelle-copy');
+    });
+  }
+  function close(){ overlay.classList.remove('open'); store.set('supportDismissedAt', Date.now()); }
+  window.openSupport = function(src){ overlay.classList.add('open'); track('support-open-' + (src||'?')); };
+  document.getElementById('support-close').addEventListener('click', close);
+  document.getElementById('support-later').addEventListener('click', close);
+  overlay.addEventListener('click', ev=>{ if(ev.target === overlay) close(); });
+  document.addEventListener('keydown', ev=>{ if(ev.key === 'Escape' && overlay.classList.contains('open')) close(); });
+
+  // Heart button under the basemap switcher (top-right, desktop and phone).
+  const Btn = L.Control.extend({ options:{position:'topright'}, onAdd(){
+    const b = L.DomUtil.create('button','support-btn');
+    b.type = 'button'; b.innerHTML = '&#9829; Support';
+    b.setAttribute('aria-label','Support this map');
+    L.DomEvent.disableClickPropagation(b);
+    b.addEventListener('click', ()=>openSupport('button'));
+    return b; } });
+  new Btn().addTo(map);
+
+  // One-time nudge after 3 minutes of visible time.
+  const quiet = Date.now() - store.get('supportDismissedAt') < 30*DAY ||
+                Date.now() - store.get('supportDonatedAt')   < 180*DAY;
+  if(!quiet){
+    let visibleMs = 0, last = Date.now();
+    const tick = setInterval(()=>{
+      const now = Date.now();
+      if(document.visibilityState === 'visible') visibleMs += now - last;
+      last = now;
+      if(visibleMs >= AUTO_MS){
+        clearInterval(tick);
+        if(!overlay.classList.contains('open')){ openSupport('auto'); store.set('supportDismissedAt', Date.now()); }
+      }
+    }, 5000);
+  }
 })();
 </script>
 <script data-goatcounter="https://wcage.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
