@@ -116,7 +116,7 @@
   <div class="sub">Flight data provided by <b>Flightradar24</b></div>
   <div class="allrow"><label><input type="checkbox" id="allFlightsCb" checked> All flights</label></div>
   <div id="legend"></div>
-  <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Yellow = infested zone, blue = surveillance (TAHC). Green = flight start, red = end. Basemap switch is top-right.</div>
+  <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Dashed lime green = non-US aircraft (Guatemalan tails flying out of Tampico). Yellow = infested zone, blue = surveillance (TAHC). Green = flight start, red = end. Basemap switch is top-right.</div>
   <div class="hint" style="border-top:none;padding-top:4px;">Contact: William Cage - wrcage@gmail.com</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
@@ -134,6 +134,10 @@ const DROP_BAND_HALF_FT   = 1000;   // drop band = modal altitude ± this
 const MIN_DROP_POINTS     = 30;     // min contiguous in-band points to count as drop
 const MERGE_GAP_POINTS    = 100;    // adjacent drop runs separated by < this many out-of-band points get merged
 const TRANSIT_OPACITY = 0.35;
+// Non-US aircraft (registration not starting with "N", e.g. Guatemala's
+// TG-JAC/TG-JAK) draw dashed so viewers can tell them from the US fleet.
+const isNonUS = ac => !/^N/.test(ac);
+const DASH_DROP = '9 6', DASH_TRANSIT = '4 6';
 const TRANSIT_WEIGHT  = 2;
 const DROP_OPACITY    = 0.95;
 const DROP_WEIGHT     = 3;
@@ -549,10 +553,12 @@ flights.forEach((f,i)=>{
     if(seg.phase === 'drop'){
       // Drop legs: full halo + bold colored line — these are the work
       L.polyline(seg.coords, {color:'#fff', weight:5, opacity:0.5}).addTo(g);
-      L.polyline(seg.coords, {color:f.color, weight:DROP_WEIGHT, opacity:DROP_OPACITY}).addTo(g);
+      L.polyline(seg.coords, {color:f.color, weight:DROP_WEIGHT, opacity:DROP_OPACITY,
+                              dashArray: isNonUS(f.ac) ? DASH_DROP : null}).addTo(g);
     } else {
       // Transit legs: thinner, faded, no halo — visible but de-emphasized
-      L.polyline(seg.coords, {color:f.color, weight:TRANSIT_WEIGHT, opacity:TRANSIT_OPACITY}).addTo(g);
+      L.polyline(seg.coords, {color:f.color, weight:TRANSIT_WEIGHT, opacity:TRANSIT_OPACITY,
+                              dashArray: isNonUS(f.ac) ? DASH_TRANSIT : null}).addTo(g);
     }
   });
   const s = f.coords[0], e = f.coords[f.coords.length - 1];
@@ -583,8 +589,8 @@ acOrder.forEach(ac=>{
     '<input type="checkbox" class="accb" id="accb_'+ac+'" data-accb="'+ac+'" checked>'+
     '<span class="acname" data-acexp="'+ac+'">'+
       '<span class="caret" id="caret_'+ac+'">&#9656;</span>'+
-      '<span class="sw" style="border-top-color:'+color+';"></span>'+
-      ac+' <span class="account">('+idxs.length+')</span>'+
+      '<span class="sw" style="border-top-color:'+color+';'+(isNonUS(ac)?'border-top-style:dashed;':'')+'"></span>'+
+      ac+(isNonUS(ac)?' <span class="account">non-US</span>':'')+' <span class="account">('+idxs.length+')</span>'+
     '</span>';
   legend.appendChild(hdr);
 
@@ -596,7 +602,7 @@ acOrder.forEach(ac=>{
     const row=document.createElement('div');
     row.className='row';
     row.innerHTML='<input type="checkbox" id="cb'+i+'" checked>'+
-                  '<span class="sw" style="border-top-color:'+f.color+';"></span>'+
+                  '<span class="sw" style="border-top-color:'+f.color+';'+(isNonUS(f.ac)?'border-top-style:dashed;':'')+'"></span>'+
                   '<span class="lbl" data-zoom="'+i+'">'+f.name+'</span>';
     list.appendChild(row);
   });

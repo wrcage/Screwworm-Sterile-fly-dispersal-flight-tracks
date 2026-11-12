@@ -88,13 +88,15 @@ TAILS = [
     "N37H", "N62V", "N67K", "N72L", "N75G", "N75V",
     "N90D", "N92B", "N96S", "N97D", "TGJAC", "TGJAK",
     "N75Z",    # added 2026-11-12: Dynamic Aviation King Air, Hermosillo ops (found by discover_aircraft.py)
-    "XCROK",   # added 2026-11-12: Mexican government King Air, dispersal over Sonora from Hermosillo
+    # XC-ROK was added and removed 2026-11-12: it belongs to the Servicio
+    # Geologico Mexicano (aerial geophysical survey grids) and never flew US
+    # work, so it isn't part of the dispersal picture this map is for.
 ]
 # Display IDs above are hyphen-free (how the map labels them). FR24's
 # `registrations` filter needs the real hyphenated form for non-US aircraft
 # (XC-ROK, not XCROK) — the unhyphenated TGJAC/TGJAK likely never matched,
 # which may be why they vanished after the switch to FR24.
-FR24_REG = {"XCROK": "XC-ROK", "TGJAC": "TG-JAC", "TGJAK": "TG-JAK"}
+FR24_REG = {"TGJAC": "TG-JAC", "TGJAK": "TG-JAK"}
 MAX_REGS_PER_QUERY = 15   # FR24 limit
 
 
@@ -115,10 +117,9 @@ TAIL_COLORS = {
     "N92B":  "#7c3aed",
     "N96S":  "#6b7280",  # new tail, grey until further notice
     "N75Z":  "#6b7280",
-    "XCROK": "#6b7280",
     "N97D":  "#0d9488",
-    "TGJAC": "#6b7280",
-    "TGJAK": "#6b7280",
+    "TGJAC": "#84cc16",   # lime; drawn dashed (non-US)
+    "TGJAK": "#84cc16",   # lime; drawn dashed (non-US)
 }
 
 # Airport coordinates for nearest-airport lookup when FR24 leaves orig/dest
