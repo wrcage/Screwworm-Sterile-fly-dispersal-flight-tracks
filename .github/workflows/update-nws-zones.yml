@@ -45,7 +45,10 @@ jobs:
           # default = commit; the manual dry-run input flips it off
           COMMIT: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '0' || '1' }}
         run: |
-          python update_zones.py ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '' || '--commit' }} ${{ inputs.nm_backfill && '--nm-backfill' || '' }}
+          # COMMIT (above) decides commit vs dry run. Don't pass --commit here:
+          # an `&& '' ||` expression can't yield '' (empty string is falsy), so
+          # the old version always passed --commit, even on dry runs.
+          python update_zones.py ${{ inputs.nm_backfill && '--nm-backfill' || '' }}
 
       - name: Commit & push if changed
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
