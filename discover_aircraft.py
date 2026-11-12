@@ -74,7 +74,7 @@ def inspect(regs, days):
     """Fetch tracks for long flights of the given registrations and report
     path/straight ratio, turn count and area — a grid (dispersal) pattern
     has a high ratio and dozens of ~180 degree reversals."""
-    regs = [r.strip().upper().replace("-", "") for r in regs if r.strip()]
+    regs = [r.strip().upper() for r in regs if r.strip()]   # keep hyphens: FR24 wants XC-ROK, not XCROK
     flights = summary({"registrations": ",".join(regs[:15])}, days)
     lines = ["## Track inspection (last %d days)" % days, "",
              "| reg | date | route | hours | path mi | straight mi | path/straight | reversals | lat range | lon range | alt mode ft |",
