@@ -381,19 +381,47 @@ def fr24_get(endpoint, params=None):
         )
 
 
+# FR24 caps /flight-summary/light at 20 results per request on this plan (the
+# `limit` param does not raise it — observed 2026-11-12). Any window that comes
+# back with exactly 20 may be truncated, so split it in half and re-query.
+SUMMARY_CAP = 20
+MIN_SPLIT = dt.timedelta(minutes=30)
+
+
+def summary_window(params, start, end, _depth=0):
+    """All /flight-summary/light results for params between start and end
+    (UTC datetimes), splitting the window whenever the 20-result cap is hit.
+    Results are de-duplicated by fr24_id."""
+    p = dict(params)
+    p["flight_datetime_from"] = start.strftime("%Y-%m-%dT%H:%M:%S")
+    p["flight_datetime_to"] = end.strftime("%Y-%m-%dT%H:%M:%S")
+    data = (fr24_get("/flight-summary/light", p) or {}).get("data") or []
+    if len(data) < SUMMARY_CAP or (end - start) <= MIN_SPLIT:
+        if len(data) >= SUMMARY_CAP:
+            log("  warning: 20-result cap hit on a %s window; may be incomplete"
+                % (end - start))
+        return data
+    mid = start + (end - start) / 2
+    out, seen = [], set()
+    for part in (summary_window(params, start, mid, _depth + 1),
+                 summary_window(params, mid, end, _depth + 1)):
+        for f in part:
+            k = f.get("fr24_id")
+            if k not in seen:
+                seen.add(k)
+                out.append(f)
+    return out
+
+
 def fetch_summary_for_date(date_obj):
     """Return the list of flight-summary/light records for our tails on the
-    given UTC date. FR24's `registrations` param is comma-separated, so all
-    tails come back in one call."""
-    from_iso = date_obj.isoformat() + "T00:00:00"
-    to_iso   = date_obj.isoformat() + "T23:59:59"
-    params = {
-        "flight_datetime_from": from_iso,
-        "flight_datetime_to":   to_iso,
-        "registrations":        ",".join(TAILS),
-    }
-    result = fr24_get("/flight-summary/light", params)
-    return (result or {}).get("data") or []
+    given UTC date. FR24's `registrations` param is comma-separated (max 15),
+    so all tails come back in one call (split further if the cap is hit)."""
+    start = dt.datetime.combine(date_obj, dt.time(0, 0, 0))
+    end = dt.datetime.combine(date_obj, dt.time(23, 59, 59))
+    if len(TAILS) > 15:
+        log("  warning: more than 15 tails; FR24 only accepts 15 registrations per query")
+    return summary_window({"registrations": ",".join(TAILS[:15])}, start, end)
 
 
 def fetch_track(fr24_id):

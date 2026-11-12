@@ -32,7 +32,7 @@ import update_flights as uf
 STAGING_AIRPORTS = ["KEBG", "KUVA", "KDRT", "KPEQ", "KSJT", "KFST", "KMRF",
                     "KLRD", "KCVB", "MMTM", "MMAN", "MMHO", "MMCS", "MMNL",
                     "MMPG"]                      # FR24 allows max 15
-SMALL_FIELDS = ["KEBG", "KUVA", "KMRF"]           # GA fields: any type is OK
+SMALL_FIELDS = ["KEBG", "KMRF"]   # any type; KUVA dropped (Laughlin AFB T-6 traffic)
 FALLBACK_TYPES = ["BE9L"]
 LIMIT_TYPE_QUERY = 300
 LIMIT_ANY_QUERY = 250
@@ -49,14 +49,17 @@ def usage_total():
         return None
 
 
-def summary(params, days, limit):
-    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-    p = dict(params)
-    p["flight_datetime_from"] = (now - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
-    p["flight_datetime_to"] = now.strftime("%Y-%m-%dT%H:%M:%S")
-    p["limit"] = limit
-    res = uf.fr24_get("/flight-summary/light", p) or {}
-    return res.get("data") or []
+def summary(params, days, limit=None):
+    """Query day by day (and finer when a day hits FR24's 20-result cap)."""
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0, tzinfo=None)
+    out, seen = [], set()
+    for i in range(days, 0, -1):
+        start = now - dt.timedelta(days=i)
+        for f in uf.summary_window(params, start, start + dt.timedelta(days=1)):
+            if f.get("fr24_id") not in seen:
+                seen.add(f.get("fr24_id"))
+                out.append(f)
+    return out
 
 
 def hours(f):
@@ -80,7 +83,7 @@ def main():
         return 0
 
     # 1) learn type codes from our own fleet
-    own = summary({"registrations": ",".join(uf.TAILS)}, args.days, 60)
+    own = summary({"registrations": ",".join(uf.TAILS)}, min(args.days, 2))
     types = sorted({(f.get("type") or "").strip() for f in own if f.get("type")})
     print("fleet type codes seen: " + (", ".join(types) or "(none)"))
     if not types:
@@ -94,8 +97,6 @@ def main():
                        args.days, LIMIT_ANY_QUERY)
     print("results: fleet=%d same-type=%d any-type=%d"
           % (len(own), len(by_type), len(any_type)))
-    if len(by_type) >= LIMIT_TYPE_QUERY or len(any_type) >= LIMIT_ANY_QUERY:
-        print("NOTE: a query hit its limit; results may be incomplete.")
 
     agg = defaultdict(lambda: {"n": 0, "long": 0, "types": set(), "hex": set(),
                                "callsigns": set(), "airports": defaultdict(int),
