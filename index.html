@@ -48,16 +48,26 @@
     .panel{max-width:none;left:8px;right:8px;top:8px;max-height:calc(100vh - 120px);}
   }
   #timeline{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);
-    width:min(340px,calc(100% - 24px));
+    width:min(400px,calc(100% - 24px));
     z-index:1100;background:rgba(255,255,255,.96);
     padding:22px 14px 8px;border-radius:14px;
     font-family:-apple-system,Segoe UI,Roboto,sans-serif;
     box-shadow:0 4px 14px rgba(0,0,0,.3);}
-  #t-row{display:flex;align-items:center;gap:10px;}
+  #t-row{display:flex;align-items:center;gap:8px;}
+  /* Day-step arrows: big enough to tap on a phone; hold to keep stepping. */
+  .t-step{flex:none;width:36px;height:36px;border-radius:50%;border:none;
+    background:#f1f5f9;color:#1f2937;font-size:22px;line-height:1;font-weight:700;
+    display:flex;align-items:center;justify-content:center;padding:0 0 2px;
+    cursor:pointer;touch-action:manipulation;user-select:none;-webkit-user-select:none;
+    -webkit-tap-highlight-color:transparent;}
+  .t-step:hover{background:#e2e8f0;}
+  .t-step:active{background:#cbd5e1;}
+  .t-step:disabled{opacity:.35;cursor:default;}
+  #t-ends{display:flex;justify-content:space-between;margin:2px 44px 0;}
   .t-edge{color:#6b7280;font-weight:600;font-size:11px;
     font-variant-numeric:tabular-nums;flex:none;}
   #t-max-label{text-align:right;}
-  #t-track{position:relative;flex:1;min-width:0;height:28px;}
+  #t-track{position:relative;flex:1;min-width:0;height:28px;touch-action:none;}
   #t-slider{position:absolute;inset:0;width:100%;margin:0;background:transparent;
     -webkit-appearance:none;appearance:none;cursor:pointer;z-index:2;}
   #t-slider:focus{outline:none;}
@@ -77,7 +87,9 @@
   #t-window{display:flex;align-items:center;gap:5px;margin-top:9px;flex-wrap:wrap;}
   .t-winlabel{font-size:11px;color:#6b7280;font-weight:600;margin-right:2px;}
   .winpill{font-size:11px;font-weight:600;color:#374151;background:#f1f5f9;
-    border-radius:11px;padding:3px 9px;cursor:pointer;user-select:none;line-height:1.2;}
+    border-radius:11px;padding:4px 9px;cursor:pointer;user-select:none;line-height:1.2;
+    touch-action:manipulation;}
+  @media (max-width:420px){ .winpill{padding:5px 8px;} #t-window{gap:4px;} }
   .winpill:hover{background:#e2e8f0;}
   .winpill.active{background:#2563eb;color:#fff;}
   #t-bubble{position:absolute;bottom:calc(100% + 4px);
@@ -90,19 +102,24 @@
 </style></head>
 <body>
 <div id="timeline"><div id="t-row">
-  <span class="t-edge" id="t-start-label">May 30</span>
+  <button class="t-step" id="t-prev" type="button" aria-label="Previous day">&#8249;</button>
   <div id="t-track">
     <div id="t-bubble">&hellip;</div>
     <div id="t-ticks"></div>
     <!-- min/max/value are placeholders; the initFlights loader recomputes them
          from real flight data as soon as flights-history.json arrives. -->
-    <input type="range" id="t-slider" min="0" max="1" value="1" step="1">
+    <input type="range" id="t-slider" min="0" max="1" value="1" step="1" aria-label="Timeline day">
   </div>
+  <button class="t-step" id="t-next" type="button" aria-label="Next day">&#8250;</button>
+</div>
+<div id="t-ends">
+  <span class="t-edge" id="t-start-label">May 30</span>
   <span class="t-edge" id="t-max-label">&hellip;</span>
 </div>
 <div id="t-window">
   <span class="t-winlabel">Flights:</span>
   <span class="winpill" data-win="99">All</span>
+  <span class="winpill" data-win="30">30d</span>
   <span class="winpill" data-win="14">14d</span>
   <span class="winpill active" data-win="7">7d</span>
   <span class="winpill" data-win="3">3d</span>
@@ -484,10 +501,16 @@ slider.value = maxDay;
 document.getElementById('t-start-label').textContent = DAY_LABELS[0];
 document.getElementById('t-max-label').textContent   = DAY_LABELS[DAY_LABELS.length-1];
 
-// Build one tick per day (15 total). Mark first/last and weekly boundaries as major.
-for(let i=0;i<DAY_LABELS.length;i++){
+// One tick per week (daily ticks became an unreadable smear past ~100 days),
+// positioned by day so they line up with the thumb. First/last are major.
+const lastIdx = DAY_LABELS.length - 1;
+ticksEl.style.display = 'block';
+for(let i=0;i<=lastIdx;i++){
+  if(i!==0 && i!==lastIdx && i%7!==0) continue;
   const t=document.createElement('div');
-  t.className='tick'+((i===0||i===DAY_LABELS.length-1||i%7===0)?' major':'');
+  t.className='tick'+((i===0||i===lastIdx)?' major':'');
+  t.style.position='absolute';
+  t.style.left = (lastIdx ? (100*i/lastIdx) : 0) + '%';
   ticksEl.appendChild(t);
 }
 
@@ -506,6 +529,45 @@ slider.addEventListener('input', ()=>{
 });
 window.addEventListener('resize', updateBubble);
 updateBubble();
+
+// One-day step arrows. Tap = one day; press and hold = keep stepping.
+const prevBtn = document.getElementById('t-prev');
+const nextBtn = document.getElementById('t-next');
+function syncStepButtons(){
+  prevBtn.disabled = +slider.value <= +slider.min;
+  nextBtn.disabled = +slider.value >= +slider.max;
+}
+function stepDay(d){
+  const v = Math.max(+slider.min, Math.min(+slider.max, +slider.value + d));
+  if(v === +slider.value) return false;
+  slider.value = v; currentDay = v;
+  updateBubble(); updateVis(); syncStepButtons();
+  return true;
+}
+function wireHold(btn, d){
+  let delayT = null, repT = null;
+  const stop = ()=>{ clearTimeout(delayT); clearInterval(repT); delayT = repT = null; };
+  btn.addEventListener('pointerdown', ev=>{
+    ev.preventDefault();
+    stop();
+    stepDay(d);
+    delayT = setTimeout(()=>{ repT = setInterval(()=>{ if(!stepDay(d)) stop(); }, 140); }, 450);
+  });
+  ['pointerup','pointerleave','pointercancel','blur'].forEach(e=>btn.addEventListener(e, stop));
+  // keyboard activation (Enter/Space) still works via click
+  btn.addEventListener('click', ev=>{ if(ev.detail === 0) stepDay(d); });
+}
+wireHold(prevBtn, -1);
+wireHold(nextBtn, +1);
+slider.addEventListener('input', syncStepButtons);
+// Left/right arrow keys step a day (unless the slider itself has focus,
+// which already handles them, or the user is typing somewhere).
+document.addEventListener('keydown', ev=>{
+  if(ev.target === slider || /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target.tagName)) return;
+  if(ev.key === 'ArrowLeft'){ if(stepDay(-1)) ev.preventDefault(); }
+  else if(ev.key === 'ArrowRight'){ if(stepDay(+1)) ev.preventDefault(); }
+});
+syncStepButtons();
 
 // Trailing-window pills (flights only)
 const winRow = document.getElementById('t-window');
@@ -696,6 +758,7 @@ function jumpToDay(day){
   slider.value = day;
   updateBubble();
   updateVis();
+  if(typeof syncStepButtons === 'function') syncStepButtons();
 }
 
 window.setAll=on=>{
