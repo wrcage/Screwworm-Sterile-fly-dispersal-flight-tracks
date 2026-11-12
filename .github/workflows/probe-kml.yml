@@ -1,0 +1,24 @@
+name: Probe KML map
+
+# Read-only: downloads a KML (e.g. a Google My Maps export) and prints a
+# summary of its folders and shapes. Changes nothing in the repo.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "KML URL (Google My Maps: https://www.google.com/maps/d/kml?mid=<id>&forcekml=1)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python probe_kml.py "${{ inputs.url }}"
