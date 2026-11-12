@@ -1,1 +1,1 @@
-{"date_from": "2026-10-14", "date_to": "2026-11-12", "reason": "retry after making track 404s non-fatal"}
+{"date_from": "2026-10-14", "date_to": "2026-11-12", "tails": ["N75Z", "XCROK", "TGJAC", "TGJAK"], "reason": "new tails found by discover_aircraft.py; check TG- tails with hyphenated registrations"}

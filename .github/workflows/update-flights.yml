@@ -87,7 +87,9 @@ jobs:
           if [ "${{ github.event_name }}" = "push" ] && [ -f backfill-request.json ]; then
             BF_FROM=$(python -c "import json;print(json.load(open('backfill-request.json'))['date_from'])")
             BF_TO=$(python -c "import json;print(json.load(open('backfill-request.json'))['date_to'])")
+            BF_TAILS=$(python -c "import json;print(','.join(json.load(open('backfill-request.json')).get('tails',[])))")
             ARGS="--date-from $BF_FROM --date-to $BF_TO"
+            if [ -n "$BF_TAILS" ]; then ARGS="$ARGS --tails $BF_TAILS"; fi
           fi
           if [ -z "$ARGS" ] && [ -n "${{ inputs.date_from }}" ] && [ -n "${{ inputs.date_to }}" ]; then
             ARGS="--date-from ${{ inputs.date_from }} --date-to ${{ inputs.date_to }}"

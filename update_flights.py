@@ -87,7 +87,19 @@ FR24_HEADERS_BASE = {
 TAILS = [
     "N37H", "N62V", "N67K", "N72L", "N75G", "N75V",
     "N90D", "N92B", "N96S", "N97D", "TGJAC", "TGJAK",
+    "N75Z",    # added 2026-11-12: Dynamic Aviation King Air, Hermosillo ops (found by discover_aircraft.py)
+    "XCROK",   # added 2026-11-12: Mexican government King Air, dispersal over Sonora from Hermosillo
 ]
+# Display IDs above are hyphen-free (how the map labels them). FR24's
+# `registrations` filter needs the real hyphenated form for non-US aircraft
+# (XC-ROK, not XCROK) — the unhyphenated TGJAC/TGJAK likely never matched,
+# which may be why they vanished after the switch to FR24.
+FR24_REG = {"XCROK": "XC-ROK", "TGJAC": "TG-JAC", "TGJAK": "TG-JAK"}
+MAX_REGS_PER_QUERY = 15   # FR24 limit
+
+
+def _norm_reg(r):
+    return (r or "").strip().upper().replace("-", "")
 
 # Legend colors, copied from what the existing flights-history.json data
 # already uses per tail. Grey (#6b7280) is the shared "lower-volume tails"
@@ -102,6 +114,8 @@ TAIL_COLORS = {
     "N90D":  "#6b7280",
     "N92B":  "#7c3aed",
     "N96S":  "#6b7280",  # new tail, grey until further notice
+    "N75Z":  "#6b7280",
+    "XCROK": "#6b7280",
     "N97D":  "#0d9488",
     "TGJAC": "#6b7280",
     "TGJAK": "#6b7280",
@@ -413,15 +427,22 @@ def summary_window(params, start, end, _depth=0):
     return out
 
 
-def fetch_summary_for_date(date_obj):
-    """Return the list of flight-summary/light records for our tails on the
-    given UTC date. FR24's `registrations` param is comma-separated (max 15),
-    so all tails come back in one call (split further if the cap is hit)."""
+def fetch_summary_for_date(date_obj, tails=None):
+    """Return flight-summary/light records for our tails on the given UTC date.
+    Registrations go in batches of 15 (FR24's limit), each split further if
+    the 20-result cap is hit."""
+    tails = tails or TAILS
     start = dt.datetime.combine(date_obj, dt.time(0, 0, 0))
     end = dt.datetime.combine(date_obj, dt.time(23, 59, 59))
-    if len(TAILS) > 15:
-        log("  warning: more than 15 tails; FR24 only accepts 15 registrations per query")
-    return summary_window({"registrations": ",".join(TAILS[:15])}, start, end)
+    regs = [FR24_REG.get(t, t) for t in tails]
+    out, seen = [], set()
+    for i in range(0, len(regs), MAX_REGS_PER_QUERY):
+        batch = regs[i:i + MAX_REGS_PER_QUERY]
+        for f in summary_window({"registrations": ",".join(batch)}, start, end):
+            if f.get("fr24_id") not in seen:
+                seen.add(f.get("fr24_id"))
+                out.append(f)
+    return out
 
 
 def fetch_track(fr24_id):
@@ -603,6 +624,8 @@ def parse_args(argv=None):
     p.add_argument("--commit", action="store_true",
                    default=(os.environ.get("COMMIT") == "1"),
                    help="Actually write flights-history.json. Default is dry run.")
+    p.add_argument("--tails", default="",
+                   help="Comma-separated subset of TAILS to fetch (default: all).")
     p.add_argument("--history", default=HISTORY_PATH_DEFAULT,
                    help="Path to flights-history.json. Default: " + HISTORY_PATH_DEFAULT)
     args = p.parse_args(argv)
@@ -642,6 +665,12 @@ def main(argv=None):
                 "KML/Excel data already in flights-history.json."
             )
 
+    only_tails = [_norm_reg(t) for t in args.tails.split(",") if t.strip()] or None
+    if only_tails:
+        bad = [t for t in only_tails if t not in TAILS]
+        if bad:
+            raise SystemExit("--tails not in TAILS: " + ", ".join(bad))
+        log("Only tails: " + ", ".join(only_tails))
     log("Mode: " + ("COMMIT" if args.commit else "DRY RUN"))
     log("Target dates: " + ", ".join(d.isoformat() for d in dates))
 
@@ -669,7 +698,7 @@ def main(argv=None):
         for target_date in dates:
             log("=" * 60)
             log("Processing " + target_date.isoformat())
-            summaries = fetch_summary_for_date(target_date)
+            summaries = fetch_summary_for_date(target_date, only_tails)
             log("  summary returned " + str(len(summaries)) + " flight(s)")
 
             for s in summaries:
@@ -680,8 +709,12 @@ def main(argv=None):
                 orig     = s.get("orig_icao") or s.get("orig_iata") or "?"
                 dest     = s.get("dest_icao") or s.get("dest_iata") or "?"
 
-                # Identify the tail from callsign. Our fleet uses tail == callsign.
-                if callsign in TAILS:
+                # Identify the tail: FR24's registration (hyphens removed) first,
+                # then callsign (the US fleet flies with callsign == registration).
+                reg_id = _norm_reg(s.get("reg"))
+                if reg_id in TAILS:
+                    tail = reg_id
+                elif callsign in TAILS:
                     tail = callsign
                 else:
                     unknown_callsign_count += 1
