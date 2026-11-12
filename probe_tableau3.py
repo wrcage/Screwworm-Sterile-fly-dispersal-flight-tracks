@@ -22,8 +22,9 @@ async def main():
                     t = ""
                 captured.append((u, r.status, t))
         pg.on("response", on_resp)
-        await pg.goto(URL, wait_until="networkidle", timeout=120000)
-        await pg.wait_for_timeout(8000)
+        await pg.goto(URL, wait_until="load", timeout=120000)
+        await pg.wait_for_timeout(20000)   # Tableau keeps a socket open; never "idle"
+        await pg.screenshot(path="tableau_view.png", full_page=True)
         print("TITLE:", await pg.title())
         try:
             txt = await pg.inner_text("body")
