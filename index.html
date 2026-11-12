@@ -65,7 +65,7 @@
   .t-step:hover{background:#e2e8f0;}
   .t-step:active{background:#cbd5e1;}
   .t-step:disabled{opacity:.35;cursor:default;}
-  #t-ends{display:flex;justify-content:space-between;margin:2px 44px 0;}
+  #t-ends{display:flex;justify-content:space-between;margin:2px 44px 0 88px;}
   .t-edge{color:#6b7280;font-weight:600;font-size:11px;
     font-variant-numeric:tabular-nums;flex:none;}
   #t-max-label{text-align:right;}
@@ -102,6 +102,22 @@
   #t-bubble::after{content:'';position:absolute;top:100%;left:50%;
     transform:translateX(-50%);border:4px solid transparent;border-top-color:#111;}
 
+  /* --- Confirmed cases (USDA) ---------------------------------------- */
+  .case-pop-wrap{background:none;border:none;}
+  /* "Pop": a filled, see-through disc that swells and fades (no rings).
+     Max size ~34px — 40% of the first preview's expansion. */
+  .case-pop{position:absolute;left:-17px;top:-17px;width:34px;height:34px;border-radius:50%;
+    background:rgba(220,38,38,.45);pointer-events:none;
+    animation:casepop 1.2s ease-out forwards;}
+  .case-pop.trap{background:rgba(220,38,38,.28);}
+  @keyframes casepop{0%{transform:scale(.25);opacity:.9}60%{opacity:.55}100%{transform:scale(1);opacity:0}}
+  .case-sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;
+    vertical-align:middle;flex:none;box-sizing:border-box;}
+  .case-key{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;color:#4b5563;margin:2px 0 4px 24px;}
+  .case-key span{display:inline-flex;align-items:center;}
+  #t-play{font-size:15px;padding:0 0 0 2px;}
+  #t-play.playing{background:#2563eb;color:#fff;padding:0;}
+
   /* --- Support this map ---------------------------------------------- */
   .support-btn{background:#fff;border:none;border-radius:8px;padding:6px 10px;
     font:600 12px -apple-system,Segoe UI,Roboto,sans-serif;color:#be123c;cursor:pointer;
@@ -134,6 +150,7 @@
 </style></head>
 <body>
 <div id="timeline"><div id="t-row">
+  <button class="t-step" id="t-play" type="button" aria-label="Play through the days">&#9654;</button>
   <button class="t-step" id="t-prev" type="button" aria-label="Previous day">&#8249;</button>
   <div id="t-track">
     <div id="t-bubble">&hellip;</div>
@@ -188,7 +205,7 @@
   <div class="sub">Flight data provided by <b>Flightradar24</b></div>
   <div class="allrow"><label><input type="checkbox" id="allFlightsCb" checked> All flights</label><a class="support-link" onclick="openSupport('legend')">&#9829; Support this map</a></div>
   <div id="legend"></div>
-  <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Dashed lime green = non-US aircraft (Guatemalan tails flying out of Tampico). Yellow = infested zone, blue = surveillance. Sources: Texas = TAHC; New Mexico = NM Livestock Board / NMSU map; Arizona = public Google My Map "New World Screwworm" (unofficial, no stated author). Green = flight start, red = end. Basemap switch is top-right.</div>
+  <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Dashed lime green = non-US aircraft (Guatemalan tails flying out of Tampico). Yellow = infested zone, blue = surveillance. Sources: Texas = TAHC; New Mexico = NM Livestock Board / NMSU map; Arizona = public Google My Map "New World Screwworm" (unofficial, no stated author). Green = flight start, black = end. Red dots = confirmed cases (USDA), placed within the county, fading to grey over 30 days; hollow rings = fly-trap detections. Basemap switch is top-right.</div>
   <div class="hint" style="border-top:none;padding-top:4px;">Contact: William Cage - wrcage@gmail.com</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
@@ -343,6 +360,92 @@ map.createPane('infPane');  map.getPane('infPane').style.zIndex='360';
 // no matter how the plane moved through the cell. Straight repeated coverage
 // now correctly reads darker than a single wandering pass.
 map.createPane('heatPane'); map.getPane('heatPane').style.zIndex='450';
+
+// --- Confirmed cases (USDA APHIS) -------------------------------------------
+// cases.json is written daily by update_cases.py from USDA's confirmed-case
+// dashboard. Each case is a dot inside its reported county (position within
+// the county is arbitrary). A new case "pops" (expanding ring) when the
+// timeline reaches its confirmation date, then shrinks and fades from red to
+// grey over CASE_FADE_DAYS. Fly-trap detections (wild flies trapped, not an
+// infected animal) are hollow rings. Cases ignore the Flights window pills.
+map.createPane('casePane'); map.getPane('casePane').style.zIndex='460';
+const caseRenderer = L.svg({pane:'casePane'});
+const CASE_FADE_DAYS = 30;
+let cases = [];          // [{...record, layer}]
+let caseShown = true;
+let lastCaseDay = null;
+const STATE_AB = {'Texas':'TX','New Mexico':'NM','Arizona':'AZ'};
+function mixColor(a, b, t){
+  const h = x => [1,3,5].map(i=>parseInt(x.slice(i,i+2),16));
+  const A=h(a), B=h(b);
+  return '#'+A.map((v,i)=>Math.round(v+(B[i]-v)*t).toString(16).padStart(2,'0')).join('');
+}
+// Dots shrink when zoomed out so a busy county doesn't become one red blob.
+function caseZoomScale(){ return Math.max(0.5, Math.min(1, (map.getZoom() - 4) / 3)); }
+function caseStyle(c, age){
+  const fresh = Math.max(0, 1 - age / CASE_FADE_DAYS);
+  const z = caseZoomScale();
+  const col = mixColor('#9ca3af', '#dc2626', fresh);
+  const trap = c.type === 'Fly Trap';
+  return {
+    radius: (4 + 5 * fresh) * z,
+    // Solid circles like the earthquake maps: see-through while new and big,
+    // more solid as they shrink and turn grey. Fly-trap detections stay hollow.
+    color: col,
+    weight: trap ? 2.5 : 1,
+    opacity: trap ? 0.65 + 0.3 * (1 - fresh) : 0.6 + 0.3 * (1 - fresh),
+    fillColor: col,
+    fillOpacity: trap ? 0 : 0.5 + 0.35 * (1 - fresh)
+  };
+}
+function fmtDate(iso){
+  const d = new Date(iso + 'T12:00:00Z');
+  return d.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric', timeZone:'UTC'});
+}
+function popCase(c){
+  const m = L.marker([c.lat, c.lon], {pane:'casePane', interactive:false, keyboard:false,
+    icon: L.divIcon({className:'case-pop-wrap', iconSize:[0,0],
+      html:'<div class="case-pop'+(c.type==='Fly Trap'?' trap':'')+'"></div>'})});
+  m.addTo(map);
+  setTimeout(()=>map.removeLayer(m), 1400);
+}
+function updateCases(){
+  const prev = lastCaseDay;
+  lastCaseDay = currentDay;
+  // Pop only when moving forward a little (stepping, playing or dragging);
+  // a big jump just shows the state on that date.
+  const popFrom = (prev != null && currentDay > prev && currentDay - prev <= 7) ? prev : null;
+  let pops = 0;
+  cases.forEach(c=>{
+    const age = currentDay - c.day;
+    const want = caseShown && age >= 0;
+    if(want){
+      c.layer.setStyle(caseStyle(c, age));
+      c.layer.setRadius(caseStyle(c, age).radius);
+      if(!map.hasLayer(c.layer)) c.layer.addTo(map);
+      if(popFrom != null && c.day > popFrom && pops < 30){ popCase(c); pops++; }
+    } else if(map.hasLayer(c.layer)){
+      map.removeLayer(c.layer);
+    }
+  });
+}
+map.on('zoomend', ()=>{ if(cases.length){ const d = lastCaseDay; lastCaseDay = currentDay; updateCases(); } });
+async function loadCases(){
+  const res = await fetch('cases.json', {cache:'no-cache'});
+  const doc = await res.json();
+  cases = (doc.cases || []).filter(c=>c.lat != null).map(c=>{
+    const where = c.county + ' County, ' + (STATE_AB[c.state] || c.state);
+    const what = c.type === 'Fly Trap' ? 'Fly-trap detection (wild flies trapped)'
+               : (c.species || 'Animal') + ' &middot; ' + c.type;
+    const layer = L.circleMarker([c.lat, c.lon], {renderer: caseRenderer, pane:'casePane'})
+      .bindPopup('<b>' + what + '</b><br>' + where + '<br>Confirmed ' + fmtDate(c.date) +
+                 '<br>USDA status today: ' + (c.status || '?') +
+                 '<br><i style="color:#6b7280">Dot placed within the county; not the exact location.</i>');
+    return Object.assign({}, c, {layer});
+  });
+  lastCaseDay = null;
+  updateCases();
+}
 let heatLayer = null;
 let heatShown = false;             // default OFF
 const HEAT_COLOR      = '#dc2626'; // red-600
@@ -512,6 +615,7 @@ function updateVis(){
     const want = (v.kind==='infested' ? zoneShown.inf : zoneShown.surv) && zoneActive(v, currentDay);
     setVis(v.layer, want);
   });
+  updateCases();
   // Refresh the drop-density heat layer to match what's now visible (no-op when off).
   rebuildHeat();
 }
@@ -612,6 +716,28 @@ function wireHold(btn, d){
   // keyboard activation (Enter/Space) still works via click
   btn.addEventListener('click', ev=>{ if(ev.detail === 0) stepDay(d); });
 }
+// ▶ Play: step one day at a time (like the earthquake-history animations).
+// From the last day it restarts at the beginning. Any manual move stops it.
+const playBtn = document.getElementById('t-play');
+const PLAY_MS = 350;
+let playT = null;
+function stopPlay(){
+  if(playT){ clearInterval(playT); playT = null; }
+  playBtn.classList.remove('playing'); playBtn.innerHTML = '&#9654;';
+  playBtn.setAttribute('aria-label','Play through the days');
+}
+function startPlay(){
+  if(+slider.value >= +slider.max){
+    slider.value = slider.min; currentDay = +slider.min;
+    updateBubble(); updateVis(); syncStepButtons();
+  }
+  playBtn.classList.add('playing'); playBtn.innerHTML = '&#10074;&#10074;';
+  playBtn.setAttribute('aria-label','Pause');
+  playT = setInterval(()=>{ if(!stepDay(+1)) stopPlay(); }, PLAY_MS);
+}
+playBtn.addEventListener('click', ()=>{ playT ? stopPlay() : startPlay(); });
+slider.addEventListener('input', stopPlay);
+[prevBtn, nextBtn].forEach(b=>b.addEventListener('pointerdown', stopPlay));
 wireHold(prevBtn, -1);
 wireHold(nextBtn, +1);
 slider.addEventListener('input', syncStepButtons);
@@ -659,6 +785,22 @@ legend.insertAdjacentHTML('beforeend','<div class="achdr">Drop density</div>');
   legend.appendChild(row);
 })();
 
+// Confirmed-case dots (USDA)
+legend.insertAdjacentHTML('beforeend','<div class="achdr">Confirmed cases (USDA)</div>');
+(function(){
+  const row=document.createElement('div'); row.className='row';
+  row.innerHTML='<input type="checkbox" id="caseToggle" checked>'+
+    '<span class="case-sw" style="background:rgba(220,38,38,.6);margin-left:7px;margin-right:12px;"></span>'+
+    '<span class="lbl">Cases by county</span>';
+  legend.appendChild(row);
+  legend.insertAdjacentHTML('beforeend',
+    '<div class="case-key">'+
+      '<span><span class="case-sw" style="background:rgba(220,38,38,.55)"></span>New (fades over 30 days)</span>'+
+      '<span><span class="case-sw" style="background:rgba(156,163,175,.85)"></span>Older</span>'+
+      '<span><span class="case-sw" style="border:2px solid #dc2626"></span>Fly-trap detection</span>'+
+    '</div>');
+})();
+
 
 // Draw every flight's map layers — split each flight into transit/drop
 // segments so cruise legs can be faded relative to drop legs. Always built;
@@ -682,9 +824,9 @@ flights.forEach((f,i)=>{
     }
   });
   const s = f.coords[0], e = f.coords[f.coords.length - 1];
-  L.circleMarker([s[0],s[1]],{radius:6,color:'#000',weight:1,fillColor:'#22c55e',fillOpacity:1})
+  L.circleMarker([s[0],s[1]],{radius:4,color:'#000',weight:1,fillColor:'#22c55e',fillOpacity:1})
     .bindPopup('<b>'+f.ac+' &middot; '+f.name+'</b><br>Start '+s[0].toFixed(4)+', '+s[1].toFixed(4)).addTo(g);
-  L.circleMarker([e[0],e[1]],{radius:6,color:'#000',weight:1,fillColor:'#ef4444',fillOpacity:1})
+  L.circleMarker([e[0],e[1]],{radius:3,color:'#000',weight:1,fillColor:'#1f2937',fillOpacity:1})
     .bindPopup('<b>'+f.ac+' &middot; '+f.name+'</b><br>End '+e[0].toFixed(4)+', '+e[1].toFixed(4)).addTo(g);
   g.addTo(map);
   groups[i] = g; fb[i] = ll; ll.forEach(p => all.push(p));
@@ -753,6 +895,9 @@ legend.addEventListener('change',ev=>{
   } else if(id === 'heatToggle'){
     heatShown = ev.target.checked;
     rebuildHeat();
+  } else if(id === 'caseToggle'){
+    caseShown = ev.target.checked;
+    updateCases();
   }
 });
 
@@ -841,6 +986,7 @@ syncMasterCheckbox();
 
 updateVis();
 loadZones().catch(err=>console.error('Failed to load zones-timeline.json:', err));
+loadCases().catch(err=>console.error('Failed to load cases.json:', err));
 loadCounties();
 window.toggleLegend=function(){
   document.getElementById('panel').classList.toggle('collapsed');
