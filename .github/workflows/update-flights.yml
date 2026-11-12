@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: "Single UTC date to fetch (YYYY-MM-DD). Blank = yesterday UTC. Ignored if date_from/date_to are set."
+        description: "Single UTC date to fetch (YYYY-MM-DD). Blank = today + previous 2 days. Ignored if date_from/date_to are set."
         type: string
         default: ""
       date_from:
@@ -39,13 +39,20 @@ on:
         type: boolean
         default: true
 
-  # Daily automation: runs every day at 19:00 UTC, which is 2:00 PM Central
-  # during daylight saving (CDT, ~Mar–Nov) and 1:00 PM Central in winter
-  # (CST). GitHub cron is always UTC and does not follow DST, so the local
-  # time shifts by an hour across the year — both times are after the day's
-  # drops finish, so it captures the same day's drop flights either way.
+  # Daily automation: 20:00 UTC = 2:00 PM Central in winter (CST), 3:00 PM in
+  # summer (CDT). GitHub cron is UTC-only and often fires hours late; that is
+  # fine because each run re-checks today plus the previous 2 days (see
+  # LOOKBACK_DAYS in update_flights.py), so no day is ever skipped.
   schedule:
-    - cron: "0 19 * * *"
+    - cron: "0 20 * * *"
+
+  # Backfill without clicking anything: commit a backfill-request.json like
+  #   {"date_from": "2026-10-13", "date_to": "2026-11-12"}
+  # and this workflow runs that range and commits the result. (Used by Claude
+  # sessions, which can push to the repo but cannot press "Run workflow".)
+  push:
+    branches: [main]
+    paths: ["backfill-request.json"]
 
 permissions:
   contents: write   # to commit flights-history.json
@@ -77,9 +84,14 @@ jobs:
         run: |
           set -euo pipefail
           ARGS=""
-          if [ -n "${{ inputs.date_from }}" ] && [ -n "${{ inputs.date_to }}" ]; then
+          if [ "${{ github.event_name }}" = "push" ] && [ -f backfill-request.json ]; then
+            BF_FROM=$(python -c "import json;print(json.load(open('backfill-request.json'))['date_from'])")
+            BF_TO=$(python -c "import json;print(json.load(open('backfill-request.json'))['date_to'])")
+            ARGS="--date-from $BF_FROM --date-to $BF_TO"
+          fi
+          if [ -z "$ARGS" ] && [ -n "${{ inputs.date_from }}" ] && [ -n "${{ inputs.date_to }}" ]; then
             ARGS="--date-from ${{ inputs.date_from }} --date-to ${{ inputs.date_to }}"
-          elif [ -n "${{ inputs.date }}" ]; then
+          elif [ -z "$ARGS" ] && [ -n "${{ inputs.date }}" ]; then
             ARGS="--date ${{ inputs.date }}"
           fi
           if [ "$COMMIT" = "1" ]; then
@@ -96,6 +108,7 @@ jobs:
             git config user.email "actions@users.noreply.github.com"
             git add flights-history.json
             git commit -m "Auto: FR24 flight update ($(date -u +%Y-%m-%d))"
+            git pull --rebase origin main
             git push
             echo "Committed flights-history.json update."
           else

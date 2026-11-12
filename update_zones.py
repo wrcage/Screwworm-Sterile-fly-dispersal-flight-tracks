@@ -357,13 +357,118 @@ def build_new_snapshot(history, live, today, appear_day):
 
 # --- Main --------------------------------------------------------------------
 
+
+# --- Zone timeline (what the map actually loads) ----------------------------
+#
+# zone-history.json keeps every dated snapshot (~13 MB and growing). The map
+# only needs, for each zone geometry, the range of timeline days it was in
+# force. build_timeline() turns the snapshot list into that compact form, and
+# the map shows whichever versions cover the slider day. This is what lets a
+# zone that TAHC later lifted still appear on the dates it was real, and keeps
+# brand-new zones off the map until the day they were first published.
+
+DAY_ZERO = dt.date(2026, 5, 30)
+TIMELINE_PATH = "zones-timeline.json"
+LEGACY_BUG_DAY = 16   # appearDay value stamped on every zone by the old bug
+
+
+def _day(date_str):
+    return (dt.date.fromisoformat(date_str) - DAY_ZERO).days
+
+
+def build_timeline(history):
+    """Return {"generated","dayZero","lastDay","zones":[...]} where each zone
+    entry is one geometry version: {kind, oid, gid, from, to, geometry}.
+    `to` is inclusive, or None when the version is still current."""
+    snaps = history.get("snapshots") or [{
+        "date": history.get("meta", {}).get("baselineDate", "2026-05-30"),
+        "infested": history.get("infested"),
+        "surveillance": history.get("surveillance"),
+    }]
+    out = []
+    for kind in ("infested", "surveillance"):
+        open_v = {}     # gid -> version dict currently in force
+        all_v = {}      # gid -> list of every version (for truncation)
+        for i, snap in enumerate(snaps):
+            d = _day(snap["date"])
+            feats = {f["properties"]["globalId"]: f
+                     for f in (snap.get(kind) or {}).get("features", [])}
+            removed = [g for g in open_v if g not in feats]
+            hand_dates = []
+            for gid, f in feats.items():
+                p = f["properties"]
+                prev = open_v.get(gid)
+                if prev is not None and prev["geometry"] == f["geometry"]:
+                    continue                       # unchanged; keep extending
+                if prev is not None:               # reshaped: close old version
+                    prev["to"] = d - 1
+                    start = d
+                elif i == 0:                       # baseline: hand-researched dates
+                    start = p.get("appearDay", 0)
+                else:                              # brand-new zone
+                    a = p.get("appearDay")
+                    if a is not None and a != LEGACY_BUG_DAY and a < d:
+                        start = a                  # deliberate hand correction
+                        hand_dates.append(a)
+                    else:
+                        start = d                  # first day it was published
+                v = {"kind": kind, "oid": p.get("oid"), "gid": gid,
+                     "from": start, "to": None, "geometry": f["geometry"]}
+                open_v[gid] = v
+                all_v.setdefault(gid, []).append(v)
+                out.append(v)
+            # A hand-dated newcomer that arrives together with a removal is a
+            # replacement: retire the removed zone the day before it.
+            cut = (min(hand_dates) - 1) if hand_dates else None
+            for gid in removed:
+                end = d - 1 if cut is None else min(d - 1, cut)
+                for v in all_v[gid]:
+                    if v["to"] is None or v["to"] > end:
+                        v["to"] = end
+                del open_v[gid]
+        # Edwards-only early form of surveillance oid 47 (pre-merge shape)
+        if kind == "surveillance" and history.get("surv47Truncated"):
+            t = history["surv47Truncated"]
+            tp = t["properties"]
+            out.append({"kind": kind, "oid": tp.get("oid"), "gid": tp.get("globalId"),
+                        "from": tp.get("appearDay", 0),
+                        "to": tp.get("retireDay", tp.get("appearDay", 0)) - 1,
+                        "geometry": t["geometry"]})
+    out = [v for v in out if v["to"] is None or v["to"] >= v["from"]]
+    last = _day(snaps[-1]["date"])
+    return {"generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "dayZero": DAY_ZERO.isoformat(), "lastSnapshotDay": last, "zones": out}
+
+
+def _round_geom(g, nd=4):
+    """Round coordinates to nd decimals (4 = ~10 m) — invisible at map scale,
+    roughly halves the file the browser has to download."""
+    def r(x):
+        if isinstance(x, (int, float)):
+            return round(x, nd)
+        return [r(y) for y in x]
+    return {"type": g["type"], "coordinates": r(g["coordinates"])}
+
+
+def write_timeline(history, path=TIMELINE_PATH):
+    tl = build_timeline(history)
+    for v in tl["zones"]:
+        v["geometry"] = _round_geom(v["geometry"])
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(tl, f, separators=(",", ":"), ensure_ascii=True)
+    os.replace(tmp, path)
+    print(f"WROTE {path}: {len(tl['zones'])} zone versions.")
+    return tl
+
+
 def main():
     ap = argparse.ArgumentParser(description="Update zone-history.json from TAHC endpoint.")
     ap.add_argument("--commit", action="store_true",
                     help="Actually write changes. Default is dry run.")
     ap.add_argument("--appear-day", type=int, default=None,
                     help="Timeline index to assign to newly-added zones. "
-                         "Defaults to the last dayLabels index.")
+                         "Defaults to today's index (days since 2026-05-30).")
     args = ap.parse_args()
     commit = args.commit or os.environ.get("COMMIT") == "1"
 
@@ -395,13 +500,17 @@ def main():
     significant = bool(added or removed or changed)
     if not significant:
         print("No snapshot needed.")
+        if commit and not os.path.exists(TIMELINE_PATH):
+            write_timeline(history)
         return 0
 
-    # default appear day = last index of dayLabels (keeps the slider in range)
-    day_labels = history.get("dayLabels", [])
+    # Default appear day = today's timeline index (days since DAY_ZERO).
+    # BUG FIXED 2026-11-12: this used to be len(dayLabels)-1, but dayLabels is
+    # a frozen 17-entry array, so every zone added after mid-June was stamped
+    # day 16 (Jun 15) and showed up on the map months before it existed.
     appear_day = args.appear_day
     if appear_day is None:
-        appear_day = max(0, len(day_labels) - 1)
+        appear_day = (dt.date.fromisoformat(today) - DAY_ZERO).days
 
     snapshot = build_new_snapshot(history, live, today, appear_day)
 
@@ -428,6 +537,7 @@ def main():
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(history, f, separators=(",", ":"), ensure_ascii=True)
     os.replace(tmp, HISTORY_PATH)
+    write_timeline(history)
     print(f"\nWROTE snapshot {today} to {HISTORY_PATH} "
           f"({len(history['snapshots'])} snapshots total).")
     return 0

@@ -130,6 +130,17 @@ AIRPORTS = {
     "KMFE": (26.1758, -98.2386),   # McAllen International
     "5T9":  (28.8656, -100.5051),  # Eagle Pass
     "K5T9": (28.8656, -100.5051),  # Eagle Pass (FR24 sometimes K-prefixes it)
+    # Added 2026-11-12: West Texas / Arizona / Sonora / Chihuahua expansion
+    "KPEQ": (31.3824, -103.5107),  # Pecos Municipal
+    "KSJT": (31.3577, -100.4963),  # San Angelo Regional
+    "KHDO": (29.3595, -99.1767),   # Hondo Municipal
+    "KTUS": (32.1161, -110.9410),  # Tucson International
+    "KOLS": (31.4177, -110.8479),  # Nogales International (AZ)
+    "MMNG": (31.2261, -110.9759),  # Nogales (Sonora)
+    "MMHO": (29.0959, -111.0479),  # Hermosillo (staging base, Sonora)
+    "MMCS": (31.6361, -106.4289),  # Ciudad Juarez
+    "KELP": (31.8072, -106.3779),  # El Paso
+    "KTCL": (33.2206, -87.6114),   # Tuscaloosa AL (maintenance ferries)
     "MMTM": (22.2964, -97.8656),   # Tampico
     "MMNL": (27.4437, -99.5705),   # Nuevo Laredo
     "MMMY": (25.7785, -100.1075),  # Monterrey (Escobedo / NTR)
@@ -157,6 +168,16 @@ FRIENDLY = {
     "KPRS": "Presidio",
     "1E2":  "Terlingua Ranch",
     "89TE": "Lajitas",
+    "KPEQ": "Pecos",
+    "KSJT": "San Angelo",
+    "KHDO": "Hondo",
+    "KTUS": "Tucson",
+    "KOLS": "Nogales AZ",
+    "MMNG": "Nogales",
+    "MMHO": "Hermosillo",
+    "MMCS": "Ciudad Juarez",
+    "KELP": "El Paso",
+    "KTCL": "Tuscaloosa",
     "KJCT": "Junction",
     "KCZT": "Carrizo Springs",
     "KLRD": "Laredo",
@@ -177,6 +198,20 @@ DAY_ZERO = dt.date(2026, 5, 30)   # timeline day 0 anchor, fixed forever
 MIN_DATE = dt.date(2026, 7,  2)   # FR24 cutover; refuses to fetch earlier
 
 FERRY_HOURS_MAX = 3.5    # under this = ferry, no track fetch
+# Second ferry check, applied after the track is fetched (added 2026-11-12).
+# A few repositioning legs run longer than 3.5 h (Edinburg->Tuscaloosa,
+# Edinburg->Tucson, Monterrey->Hermosillo). Drop missions fly grids, so their
+# path is far longer than the straight line between endpoints (ratio >= 1.5 in
+# every real drop so far); ferries fly nearly straight (ratio 1.07-1.19).
+# A flight that ends >150 mi from where it started with ratio < 1.3 is a ferry.
+FERRY_MIN_STRAIGHT_MI = 150
+FERRY_MAX_RATIO       = 1.3
+# Default lookback: today plus the previous 2 UTC days. GitHub's scheduler
+# routinely fires hours late, so "yesterday only" skipped whole days when one
+# run fired late and the next early. Re-checking 3 days is cheap (summary only;
+# tracks are never re-fetched for flights already stored or already rejected)
+# and also picks up the same day's morning drops at the 2 PM run.
+LOOKBACK_DAYS = 3
 POINT_STEP      = 2      # keep every Nth FR24 track point (~1 pt/20s)
 NEAREST_AIRPORT_MAX_DEG = 0.3   # ~33 km at these latitudes
 RATE_LIMIT_SLEEP = 7     # seconds between API calls (safely under 10/min)
@@ -388,6 +423,29 @@ def downsample(points, step):
     return out
 
 
+def _miles(a_lat, a_lon, b_lat, b_lon):
+    import math
+    la1, lo1, la2, lo2 = map(math.radians, [a_lat, a_lon, b_lat, b_lon])
+    h = (math.sin((la2 - la1) / 2) ** 2
+         + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2)
+    return 3958.8 * 2 * math.asin(math.sqrt(min(1.0, h)))
+
+
+def straightness(coords):
+    """(path_miles, straight_miles, ratio) for a [[lat,lon,alt],...] track."""
+    path = sum(_miles(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1])
+               for i in range(len(coords) - 1))
+    straight = _miles(coords[0][0], coords[0][1], coords[-1][0], coords[-1][1])
+    return path, straight, (path / straight if straight > 0 else float("inf"))
+
+
+def is_long_ferry(coords):
+    if len(coords) < 2:
+        return False
+    _, straight, ratio = straightness(coords)
+    return straight > FERRY_MIN_STRAIGHT_MI and ratio < FERRY_MAX_RATIO
+
+
 def build_flight_record(summary_entry, track_points, tail):
     """Turn a summary entry + its track into a flights-history.json record.
     Returns None if the flight can't be usefully represented (empty track,
@@ -483,6 +541,12 @@ def write_history(history, path):
 
 # --- Main -------------------------------------------------------------------
 
+_REJECTED_AT_LOAD = None
+
+
+def _rejected_changed(history, rejected):
+    return _REJECTED_AT_LOAD is not None and len(rejected) != _REJECTED_AT_LOAD
+
 def daterange(start, end):
     """Inclusive UTC-date iterator from start to end."""
     n = (end - start).days
@@ -494,7 +558,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.strip().split("\n")[0])
     p.add_argument("--date",
                    help="Single UTC date to fetch, YYYY-MM-DD. "
-                        "Default: yesterday UTC.")
+                        "Default: today plus the previous 2 UTC days.")
     p.add_argument("--date-from",
                    help="Range start (inclusive), YYYY-MM-DD UTC. Requires --date-to.")
     p.add_argument("--date-to",
@@ -522,8 +586,11 @@ def resolve_target_dates(args):
         return list(daterange(d0, d1))
     if args.date:
         return [dt.date.fromisoformat(args.date)]
-    # Default: yesterday UTC
-    return [dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=1)]
+    # Default: today plus the previous LOOKBACK_DAYS-1 UTC days (see note at
+    # LOOKBACK_DAYS). Never earlier than the cutover.
+    today = dt.datetime.now(dt.timezone.utc).date()
+    days = [today - dt.timedelta(days=i) for i in range(LOOKBACK_DAYS - 1, -1, -1)]
+    return [d for d in days if d >= MIN_DATE]
 
 
 def main(argv=None):
@@ -547,6 +614,12 @@ def main(argv=None):
         for f in history.get("flights", [])
         if f.get("fr24_id")
     }
+    # Flights already fetched and rejected as long ferries: never pay the
+    # 40-credit track fetch for them again on a later lookback run.
+    rejected = history.setdefault("rejectedFr24Ids", [])
+    global _REJECTED_AT_LOAD
+    _REJECTED_AT_LOAD = len(rejected)
+    existing_fr24_ids |= set(rejected)
     log("Loaded " + str(len(history.get("flights", []))) + " existing flights ("
         + str(len(existing_fr24_ids)) + " with fr24_id).")
 
@@ -615,6 +688,15 @@ def main(argv=None):
             if record is None:
                 log("      warning: could not build record; skipping")
                 continue
+            if is_long_ferry(record["coords"]):
+                _, st, ra = straightness(record["coords"])
+                ferry_count += 1
+                log("      ferry (straight %.0f mi, path/straight %.2f): %s — rejected"
+                    % (st, ra, record["name"]))
+                if fid:
+                    rejected.append(fid)
+                    existing_fr24_ids.add(fid)
+                continue
             log("      built record: name=" + repr(record["name"])
                 + " day=" + str(record["day"])
                 + " raw_pts=" + str(len(track))
@@ -643,7 +725,7 @@ def main(argv=None):
         log("DRY RUN — no file written. Re-run with --commit to persist.")
         return 0
 
-    if not new_flights:
+    if not new_flights and not _rejected_changed(history, rejected):
         log("No new flights; leaving flights-history.json untouched.")
         return 0
 

@@ -43,6 +43,7 @@
     font-size:20px;line-height:1;color:#6b7280;cursor:pointer;padding:2px 4px;}
   .panel .panelclose:hover{color:#111;}
   @media (max-width:640px){
+    .leaflet-top.leaflet-left{top:58px}  /* keep zoom +/- clear of the legend ☰ button */
     .legtoggle{display:flex;}
     .panel{max-width:none;left:8px;right:8px;top:8px;max-height:calc(100vh - 120px);}
   }
@@ -327,63 +328,37 @@ function rebuildHeat(){
 map.on('zoomend', function(){ if(heatShown) rebuildHeat(); });
 
 
-// Zone layers are populated asynchronously from zone-history.json (see loadZones).
-// Each is a map of oid -> Leaflet polygon. appearDay (and for oid 47, the
-// truncated/full split) come baked into the JSON properties.
-let infPolys   = {};
-let survPolys  = {};
-let surv47Trunc = null;
-const infestedDay = {};   // oid -> day the infested zone first appears
-const survDay     = {};   // oid -> day the surveillance zone first appears
-let SURV47_TRUNC_DAY = Infinity;  // Edwards-only form appears
-let SURV47_FULL_DAY  = Infinity;  // Edwards+Sutton merged form appears
+// Zones come from zones-timeline.json, built by the zone auto-updater from
+// every dated TAHC snapshot. Each entry is one zone geometry plus the range of
+// timeline days it was actually in force (from..to, to=null means current).
+// The map shows whichever versions cover the slider day, so zones appear on
+// the day TAHC published them and drop off when TAHC lifted or reshaped them.
+// (Replaces the old approach of reading only the latest snapshot from
+// zone-history.json, which made every zone look like it existed since June.)
+let zoneVersions = [];   // [{kind, from, to, layer}]
 
 // GeoJSON stores coords as [lon,lat]; Leaflet wants [lat,lon]. A Polygon is
 // an array of rings; a MultiPolygon is an array of polygons (each an array of
-// rings). L.polygon accepts either an array of rings OR an array of polygons,
-// so we just flip lon/lat at the leaf and preserve the surrounding nesting.
+// rings). L.polygon accepts either, so flip lon/lat at the leaf.
 function geomToLatLngs(geom){
   if(geom.type === 'MultiPolygon'){
-    // [ [ring,ring], [ring], ... ] -> flip each point
     return geom.coordinates.map(poly => poly.map(ring => ring.map(p => [p[1], p[0]])));
   }
-  // Polygon: [ ring, ring(hole), ... ]
   return geom.coordinates.map(ring => ring.map(p => [p[1], p[0]]));
 }
-function buildZoneLayers(fc, paneName, style, dayMap){
-  const out={};
-  fc.features.forEach(ft=>{
-    const oid = ft.properties.oid;
-    out[oid] = L.polygon(geomToLatLngs(ft.geometry), Object.assign({pane:paneName}, style));
-    if(dayMap && ft.properties.appearDay != null) dayMap[oid] = ft.properties.appearDay;
-  });
-  return out;
-}
+const ZONE_STYLE = {
+  infested:     {pane:'infPane', color:'#b45309',weight:1.5,fillColor:'#fbbf24',fillOpacity:.55},
+  surveillance: {pane:'survPane',color:'#1d4ed8',weight:1.5,fillColor:'#3b82f6',fillOpacity:.30}
+};
+function zoneActive(v, day){ return v.from <= day && (v.to == null || v.to >= day); }
 
 async function loadZones(){
-  const res = await fetch('zone-history.json', {cache:'no-store'});
+  const res = await fetch('zones-timeline.json', {cache:'no-cache'});
   const data = await res.json();
-  // The file is either the original flat baseline (infested/surveillance at the
-  // top level) or, once the auto-updater has run, a {snapshots:[...]} list whose
-  // last entry is the most recent state. Read whichever applies.
-  const src = (data.snapshots && data.snapshots.length)
-              ? data.snapshots[data.snapshots.length - 1]
-              : data;
-  infPolys  = buildZoneLayers(src.infested,'infPane',
-    {color:'#b45309',weight:1.5,fillColor:'#fbbf24',fillOpacity:.55}, infestedDay);
-  survPolys = buildZoneLayers(src.surveillance,'survPane',
-    {color:'#1d4ed8',weight:1.5,fillColor:'#3b82f6',fillOpacity:.30}, survDay);
-  // Pre-merge Edwards-only form of oid 47 (kept at top level in both formats)
-  const t = data.surv47Truncated;
-  if(t){
-    surv47Trunc = L.polygon(
-      geomToLatLngs(t.geometry),
-      {pane:'survPane',color:'#1d4ed8',weight:1.5,fillColor:'#3b82f6',fillOpacity:.30}
-    );
-    SURV47_TRUNC_DAY = t.properties.appearDay;        // Edwards alone
-  }
-  SURV47_FULL_DAY  = survDay[47] != null ? survDay[47] // full merged form
-                     : (src.surveillance.features.find(f=>f.properties.oid===47)||{properties:{}}).properties.appearDay;
+  zoneVersions = data.zones.map(z => ({
+    kind: z.kind, from: z.from, to: z.to,
+    layer: L.polygon(geomToLatLngs(z.geometry), ZONE_STYLE[z.kind])
+  }));
   updateVis();
 }
 
@@ -394,7 +369,7 @@ async function loadZones(){
 // No legend toggle (always on) — this is reference cartography, not a layer.
 async function loadCounties(){
   try {
-    const res = await fetch('counties-tx.geojson', {cache:'no-store'});
+    const res = await fetch('counties-tx.geojson');
     const fc = await res.json();
     L.geoJSON(fc, {
       pane: 'countyPane',
@@ -452,19 +427,11 @@ function updateVis(){
     const inWindow = f.day <= currentDay && f.day >= winStart;
     setVis(groups[i], flightShown[i] && inWindow);
   });
-  // Zones are cumulative and IGNORE the trailing window — a zone that has appeared
-  // stays visible through every later day regardless of the flight window setting.
-  Object.keys(infPolys).forEach(oid=>{
-    setVis(infPolys[oid], zoneShown.inf && infestedDay[oid] <= currentDay);
-  });
-  Object.keys(survPolys).forEach(oid=>{
-    const o=+oid;
-    if(o===47){
-      setVis(survPolys[oid], zoneShown.surv && currentDay >= SURV47_FULL_DAY);
-      if(surv47Trunc) setVis(surv47Trunc, zoneShown.surv && currentDay >= SURV47_TRUNC_DAY && currentDay < SURV47_FULL_DAY);
-    } else {
-      setVis(survPolys[oid], zoneShown.surv && survDay[oid] <= currentDay);
-    }
+  // Zones ignore the flight trailing window: a zone shows on every day it was
+  // in force per TAHC, regardless of the Flights pill setting.
+  zoneVersions.forEach(v=>{
+    const want = (v.kind==='infested' ? zoneShown.inf : zoneShown.surv) && zoneActive(v, currentDay);
+    setVis(v.layer, want);
   });
   // Refresh the drop-density heat layer to match what's now visible (no-op when off).
   rebuildHeat();
@@ -476,7 +443,7 @@ function updateVis(){
   // here just pour into the existing `flights` array, then the rest of the
   // setup (slider, polylines, legend, listeners) runs against real data.
   try {
-    const res = await fetch('flights-history.json', {cache:'no-store'});
+    const res = await fetch('flights-history.json', {cache:'no-cache'});
     const data = await res.json();
     data.flights.forEach(f => flights.push(f));
     flights.forEach(() => flightShown.push(true));
@@ -694,8 +661,8 @@ legend.addEventListener('click',ev=>{
   }
   if(ev.target.getAttribute('data-zonefit')){
     let bnds=null;
-    Object.values(survPolys).forEach(p=>{
-      const b=p.getBounds();
+    zoneVersions.filter(v=>zoneActive(v,currentDay)).forEach(v=>{
+      const b=v.layer.getBounds();
       bnds = bnds ? bnds.extend(b) : L.latLngBounds(b.getSouthWest(), b.getNorthEast());
     });
     if(bnds) map.fitBounds(bnds,{padding:[40,40]});
@@ -746,7 +713,7 @@ if(masterCb){
 syncMasterCheckbox();
 
 updateVis();
-loadZones().catch(err=>console.error('Failed to load zone-history.json:', err));
+loadZones().catch(err=>console.error('Failed to load zones-timeline.json:', err));
 loadCounties();
 window.toggleLegend=function(){
   document.getElementById('panel').classList.toggle('collapsed');
@@ -756,7 +723,18 @@ if(window.matchMedia('(max-width:640px)').matches){
   document.getElementById('panel').classList.add('collapsed');
 }
 
-map.fitBounds(all,{padding:[50,50]});
+// Open framed on the flights in the default window (last 7 days), not the whole
+// history, so wherever the operation is working now is what visitors see first.
+// On desktop the legend covers the left ~390px, so pad that side.
+(function(){
+  const winStart = (windowDays >= 99) ? -Infinity : (currentDay - windowDays + 1);
+  const pts = [];
+  flights.forEach((f,i)=>{ if(f.day <= currentDay && f.day >= winStart) fb[i].forEach(p=>pts.push(p)); });
+  const target = pts.length ? pts : all;
+  const narrow = window.matchMedia('(max-width:640px)').matches;
+  map.fitBounds(target, narrow ? {padding:[30,30]}
+                               : {paddingTopLeft:[400,40], paddingBottomRight:[40,110]});
+})();
 })();
 </script>
 <script data-goatcounter="https://wcage.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>

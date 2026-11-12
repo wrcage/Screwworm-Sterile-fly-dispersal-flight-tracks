@@ -46,11 +46,12 @@ jobs:
       - name: Commit & push if changed
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         run: |
-          if [[ -n "$(git status --porcelain zone-history.json)" ]]; then
+          if [[ -n "$(git status --porcelain zone-history.json zones-timeline.json)" ]]; then
             git config user.name  "nws-zone-bot"
             git config user.email "actions@users.noreply.github.com"
-            git add zone-history.json
+            git add zone-history.json zones-timeline.json
             git commit -m "Auto: append NWS zone snapshot ($(date -u +%Y-%m-%d))"
+            git pull --rebase origin main
             git push
             echo "Committed a new snapshot."
           else
