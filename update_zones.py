@@ -33,6 +33,7 @@ a bad snapshot.
 
 import argparse
 import datetime as dt
+import re
 import json
 import math
 import os
@@ -230,6 +231,107 @@ def fetch_live_zones():
     if not out:
         raise ValueError("Endpoint returned zero zones; refusing to proceed.")
     return out
+
+
+
+# --- New Mexico zones (NMSU / NM Livestock Board web map) --------------------
+#
+# New Mexico publishes its NWS zones on an NMSU ArcGIS Online web map
+# (app c77423a2c4a9471190063fedfdf76d53 -> web map below). Unlike TAHC, they
+# publish a NEW feature layer each time zones change, with the date in the
+# layer name (NM_SW_IZ_Zone_20261106, NM_SW_ASZ_20261104 ...) and switch older
+# ones off in the web map. So: current zones = the web map's VISIBLE layers;
+# kind = "ASZ" in the name -> surveillance, otherwise infested. Each kind is
+# one dissolved polygon, tracked under a stable id ("NM:infested",
+# "NM:surveillance") so a republish is a reshape, not an add+remove.
+
+NM_PORTAL = "https://nmsu.maps.arcgis.com"
+NM_WEBMAP_ID = "002dc49258954053b334efe064f43a61"
+NM_GID = {ZONE_NAME_INFESTED: "NM:infested", ZONE_NAME_SURVEILLANCE: "NM:surveillance"}
+
+
+def _get_json(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "nws-zone-updater/1.0"})
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def nm_zone_layers():
+    """[(title, url, visible, kind, date_str_or_None)] for NM zone layers."""
+    wm = _get_json(f"{NM_PORTAL}/sharing/rest/content/items/{NM_WEBMAP_ID}/data?f=json")
+    out = []
+    for L in wm.get("operationalLayers", []):
+        title, url = L.get("title") or "", L.get("url") or ""
+        if "FeatureServer" not in url or not re.search(r"(^|_)(IZ|ASZ)(_|$)", title):
+            continue
+        kind = ZONE_NAME_SURVEILLANCE if "ASZ" in title else ZONE_NAME_INFESTED
+        m = re.search(r"(20\d{6})$", title)
+        d = f"{m.group(1)[:4]}-{m.group(1)[4:6]}-{m.group(1)[6:]}" if m else None
+        out.append((title, url, L.get("visibility") is not False, kind, d))
+    return out
+
+
+def _nm_dissolved_geometry(url):
+    """Fetch a layer's polygons (WGS84) and merge them into one geometry."""
+    gj = _get_json(url.rstrip("/") + "/query?where=1%3D1&outFields=*&outSR=4326&f=geojson")
+    polys = []
+    for ft in gj.get("features", []):
+        g = ft.get("geometry") or {}
+        if g.get("type") == "Polygon":
+            polys.append(g["coordinates"])
+        elif g.get("type") == "MultiPolygon":
+            polys.extend(g["coordinates"])
+    if not polys:
+        raise ValueError("NM layer returned no polygons: " + url)
+    return {"type": "Polygon", "coordinates": polys[0]} if len(polys) == 1 else \
+           {"type": "MultiPolygon", "coordinates": polys}
+
+
+def fetch_nm_zones():
+    """Current NM zones keyed like fetch_live_zones(): {gid: {...}}."""
+    layers = [L for L in nm_zone_layers() if L[2]]
+    out = {}
+    for kind in (ZONE_NAME_INFESTED, ZONE_NAME_SURVEILLANCE):
+        mine = sorted((L for L in layers if L[3] == kind), key=lambda L: L[4] or "")
+        if not mine:
+            continue
+        L = mine[-1]                              # newest visible layer of this kind
+        out[NM_GID[kind]] = {"oid": "NM:" + L[0], "zone_name": kind,
+                             "geometry": _nm_dissolved_geometry(L[1])}
+        print(f"  NM {('infested' if kind == 1 else 'surveillance')}: {L[0]}")
+    return out
+
+
+def nm_backfill(history, layer_dates_override=None):
+    """One-time: put NM's older dated layers into the existing snapshots so
+    the timeline shows NM zones from the date each version was published.
+    Undated layers take the date given in layer_dates_override."""
+    layers = nm_zone_layers()
+    dated = []
+    for title, url, vis, kind, d in layers:
+        d = d or (layer_dates_override or {}).get(title)
+        if not d:
+            print("  skip undated NM layer " + title)
+            continue
+        dated.append((d, kind, title, url))
+    dated.sort()
+    geoms = {}
+    for d, kind, title, url in dated:
+        geoms[title] = simplify_geometry(_nm_dissolved_geometry(url))
+        print(f"  fetched {title} ({d})")
+    for snap in history["snapshots"]:
+        for kind, fc_name in ((ZONE_NAME_INFESTED, "infested"), (ZONE_NAME_SURVEILLANCE, "surveillance")):
+            cur = [x for x in dated if x[1] == kind and x[0] <= snap["date"]]
+            feats = [f for f in snap[fc_name]["features"]
+                     if not str(f["properties"].get("globalId", "")).startswith("NM:")]
+            if cur:
+                d, _, title, _ = cur[-1]
+                feats.append({"type": "Feature",
+                              "properties": {"oid": "NM:" + title, "globalId": NM_GID[kind],
+                                             "appearDay": _day(d)},
+                              "geometry": geoms[title]})
+            snap[fc_name]["features"] = feats
+    return dated
 
 
 # --- Snapshot handling -------------------------------------------------------
@@ -469,8 +571,23 @@ def main():
     ap.add_argument("--appear-day", type=int, default=None,
                     help="Timeline index to assign to newly-added zones. "
                          "Defaults to today's index (days since 2026-05-30).")
+    ap.add_argument("--nm-backfill", action="store_true",
+                    help="One-time: add New Mexico's older dated zone layers to existing snapshots.")
     args = ap.parse_args()
     commit = args.commit or os.environ.get("COMMIT") == "1"
+    if args.nm_backfill:
+        history = load_history(HISTORY_PATH)
+        # NM_IZ_02B_07_ASZ_All has no date in its name; it was last edited
+        # 2026-10-30, alongside NM_IZ_All_20261030.
+        dated = nm_backfill(history, {"NM_IZ_02B_07_ASZ_All": "2026-10-30"})
+        print("NM layers placed: " + ", ".join(f"{t} ({d})" for d, _, t, _ in dated))
+        if commit:
+            with open(HISTORY_PATH, "w", encoding="utf-8") as f:
+                json.dump(history, f, separators=(",", ":"), ensure_ascii=True)
+            write_timeline(history)
+        else:
+            print("DRY RUN — nothing written.")
+        return 0
 
     today = dt.date.today().isoformat()
 
@@ -487,6 +604,12 @@ def main():
         return 3
 
     prev = latest_state_by_globalid(history)
+    try:
+        live.update(fetch_nm_zones())
+    except Exception as e:
+        # Never let a New Mexico hiccup look like NM zones were lifted.
+        print(f"WARNING: New Mexico zones unavailable ({e}); keeping previous NM state.")
+        live.update({g: z for g, z in prev.items() if str(g).startswith("NM:")})
     added, removed, changed, notes = diff_zones(live, prev)
 
     print(f"== Zone check {today} ==")

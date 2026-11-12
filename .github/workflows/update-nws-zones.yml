@@ -10,6 +10,10 @@ on:
     - cron: "0 11 * * *"
   workflow_dispatch:        # lets you run it by hand from the Actions tab
     inputs:
+      nm_backfill:
+        description: "One-time: add New Mexico's older dated zone layers to history"
+        type: boolean
+        default: false
       dry_run:
         description: "Dry run (no commit)?"
         type: boolean
@@ -41,7 +45,7 @@ jobs:
           # default = commit; the manual dry-run input flips it off
           COMMIT: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '0' || '1' }}
         run: |
-          python update_zones.py ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '' || '--commit' }}
+          python update_zones.py ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '' || '--commit' }} ${{ inputs.nm_backfill && '--nm-backfill' || '' }}
 
       - name: Commit & push if changed
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
