@@ -29,7 +29,8 @@
   .sw{display:inline-block;width:24px;height:0;border-top-width:3px;border-top-style:solid;margin-right:7px;vertical-align:middle;flex:none;}
   .row .lbl{cursor:pointer;flex:1;}
   .row .lbl:hover{color:#2563eb;text-decoration:underline;}
-  .allrow{margin:2px 0 6px 2px;font-size:11px;}
+  .allrow{margin:2px 0 6px 2px;font-size:11px;display:flex;align-items:center;
+    justify-content:space-between;gap:8px;flex-wrap:wrap;}
   .allrow label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;color:#374151;font-weight:600;}
   .allrow input[type=checkbox]{cursor:pointer;}
   .hint{font-size:11px;color:#6b7280;margin-top:9px;border-top:1px solid #e5e7eb;padding-top:8px;}
@@ -45,6 +46,7 @@
   @media (max-width:640px){
     .leaflet-top.leaflet-left{top:58px}  /* keep zoom +/- clear of the legend ☰ button */
     .legtoggle{display:flex;}
+    .panel h1,.panel .sub{padding-left:40px;}  /* clear the ☰ button */
     .panel{max-width:none;left:8px;right:8px;top:8px;max-height:calc(100vh - 120px);}
   }
   #timeline{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);
@@ -123,9 +125,10 @@
     touch-action:manipulation;}
   .amounts a.other{background:#e0f2fe;color:#0369a1;}
   .support-meta{font-size:12px;color:#6b7280;margin:0 0 6px;}
-  #zelle-row{display:none;font-size:13px;margin:0 0 8px;align-items:center;gap:6px;flex-wrap:wrap;}
-  #zelle-row button{border:1px solid #cbd5e1;background:#f8fafc;border-radius:6px;
-    padding:2px 8px;font-size:12px;cursor:pointer;}
+  .pay-row,#zelle-row{display:flex;font-size:13px;margin:0 0 8px;align-items:center;gap:6px;flex-wrap:wrap;}
+  #zelle-row{display:none;}
+  .pay-row button,#zelle-row button{border:1px solid #cbd5e1;background:#f8fafc;border-radius:6px;
+    padding:3px 9px;font-size:12px;cursor:pointer;touch-action:manipulation;}
   .support-later{display:block;margin:6px auto 0;border:none;background:none;color:#6b7280;
     font-size:12px;cursor:pointer;text-decoration:underline;}
 </style></head>
@@ -159,17 +162,20 @@
   <div id="support-card">
     <button id="support-close" type="button" aria-label="Close">&times;</button>
     <h3 id="support-title">Support this map</h3>
-    <p>I come from a ranching family, so this outbreak matters to me, and I'm glad the map
-       helps people follow it. I run it on my own time and cover the data, hosting and
-       software costs myself, and I'm happy to keep doing that. If it's been useful and
-       you'd like to help keep it running, any amount is much appreciated.</p>
+    <p>I come from a South Texas ranching family, so this outbreak hits close to home, and
+       I&rsquo;m glad the map has helped folks keep track of the response. I maintain it on my
+       own time and cover the data, hosting, and software costs out of pocket. I&rsquo;m happy
+       to keep it going, but if you&rsquo;ve found it useful and would like to help keep it
+       running, any contribution is greatly appreciated.</p>
+    <p>No obligation, of course. I&rsquo;m just glad to share helpful information in a
+       stressful time.</p>
     <div class="amounts">
       <a data-amt="2" target="_blank" rel="noopener">$2</a>
       <a data-amt="5" target="_blank" rel="noopener">$5</a>
       <a data-amt="10" target="_blank" rel="noopener">$10</a>
       <a data-amt="" class="other" target="_blank" rel="noopener">Other</a>
     </div>
-    <p class="support-meta">Venmo <b>@William-Cage</b></p>
+    <div class="pay-row">Venmo: <b>@William-Cage</b> <button type="button" id="venmo-copy">Copy</button></div>
     <div id="zelle-row">Zelle: <b id="zelle-id"></b> <button type="button" id="zelle-copy">Copy</button></div>
     <p class="support-meta"><i>Personal contributions, not tax-deductible. Thank you!</i></p>
     <button class="support-later" type="button" id="support-later">Maybe later</button>
@@ -180,11 +186,10 @@
   <button class="panelclose" onclick="toggleLegend()" aria-label="Hide legend">&times;</button>
   <h1>Sterile-Fly Dispersal Tracks</h1>
   <div class="sub">Flight data provided by <b>Flightradar24</b></div>
-  <div class="allrow"><label><input type="checkbox" id="allFlightsCb" checked> All flights</label></div>
+  <div class="allrow"><label><input type="checkbox" id="allFlightsCb" checked> All flights</label><a class="support-link" onclick="openSupport('legend')">&#9829; Support this map</a></div>
   <div id="legend"></div>
   <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Dashed lime green = non-US aircraft (Guatemalan tails flying out of Tampico). Yellow = infested zone, blue = surveillance. Sources: Texas = TAHC; New Mexico = NM Livestock Board / NMSU map; Arizona = public Google My Map "New World Screwworm" (unofficial, no stated author). Green = flight start, red = end. Basemap switch is top-right.</div>
   <div class="hint" style="border-top:none;padding-top:4px;">Contact: William Cage - wrcage@gmail.com</div>
-  <div class="hint" style="border-top:none;padding-top:2px;"><a class="support-link" onclick="openSupport('legend')">&#9829; Support this map</a></div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
@@ -880,20 +885,43 @@ if(window.matchMedia('(max-width:640px)').matches){
   const track = path => { try { window.goatcounter && window.goatcounter.count &&
     window.goatcounter.count({path: path, title: path, event: true}); } catch(e){} };
 
+  // Phones: venmo.com/<user>?txn=pay opens the Venmo app with everything filled
+  // in. Computers: that link drops the recipient on Venmo's website, so use the
+  // web pay form, which takes recipients= directly.
+  const isPhone = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                  (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
   overlay.querySelectorAll('.amounts a').forEach(a=>{
     const amt = a.getAttribute('data-amt');
-    a.href = 'https://venmo.com/' + VENMO_USER + '?txn=pay' +
-             (amt ? '&amount=' + amt : '') + '&note=' + encodeURIComponent(NOTE);
+    const q = (amt ? '&amount=' + amt : '') + '&note=' + encodeURIComponent(NOTE);
+    a.href = isPhone
+      ? 'https://venmo.com/' + VENMO_USER + '?txn=pay' + q
+      : 'https://account.venmo.com/pay?txn=pay&recipients=' + VENMO_USER + q;
     a.addEventListener('click', ()=>{
       store.set('supportDonatedAt', Date.now());
       track('support-venmo-' + (amt || 'other'));
     });
   });
+  function copyText(btn, text){
+    const done = ()=>{ btn.textContent = 'Copied'; setTimeout(()=>btn.textContent='Copy', 2000); };
+    try {
+      if(navigator.clipboard && window.isSecureContext){ navigator.clipboard.writeText(text).then(done, ()=>legacy()); }
+      else legacy();
+    } catch(e){ legacy(); }
+    function legacy(){
+      const t = document.createElement('textarea'); t.value = text; t.style.position='fixed'; t.style.opacity='0';
+      document.body.appendChild(t); t.select();
+      try { document.execCommand('copy'); done(); } catch(e){}
+      t.remove();
+    }
+  }
+  document.getElementById('venmo-copy').addEventListener('click', ev=>{
+    copyText(ev.currentTarget, '@' + VENMO_USER); track('support-venmo-copy');
+  });
   if(ZELLE_ID){
     document.getElementById('zelle-row').style.display = 'flex';
     document.getElementById('zelle-id').textContent = ZELLE_ID;
     document.getElementById('zelle-copy').addEventListener('click', ev=>{
-      try { navigator.clipboard.writeText(ZELLE_ID); ev.target.textContent = 'Copied'; } catch(e){}
+      copyText(ev.currentTarget, ZELLE_ID);
       store.set('supportDonatedAt', Date.now()); track('support-zelle-copy');
     });
   }
@@ -901,7 +929,8 @@ if(window.matchMedia('(max-width:640px)').matches){
   window.openSupport = function(src){ overlay.classList.add('open'); track('support-open-' + (src||'?')); };
   document.getElementById('support-close').addEventListener('click', close);
   document.getElementById('support-later').addEventListener('click', close);
-  overlay.addEventListener('click', ev=>{ if(ev.target === overlay) close(); });
+  // No close-on-backdrop-tap: a tap meant for the map/timeline behind the card
+  // used to dismiss it instantly. Only the x, "Maybe later" or Esc close it.
   document.addEventListener('keydown', ev=>{ if(ev.key === 'Escape' && overlay.classList.contains('open')) close(); });
 
   // Heart button under the basemap switcher (top-right, desktop and phone).
@@ -918,16 +947,20 @@ if(window.matchMedia('(max-width:640px)').matches){
   const quiet = Date.now() - store.get('supportDismissedAt') < 30*DAY ||
                 Date.now() - store.get('supportDonatedAt')   < 180*DAY;
   if(!quiet){
+    // Don't pop up mid-gesture: wait until the visitor has been idle 5 s.
+    let lastInput = 0;
+    ['pointerdown','pointermove','touchstart','wheel','keydown','input'].forEach(e =>
+      document.addEventListener(e, ()=>{ lastInput = Date.now(); }, {passive:true, capture:true}));
     let visibleMs = 0, last = Date.now();
     const tick = setInterval(()=>{
       const now = Date.now();
       if(document.visibilityState === 'visible') visibleMs += now - last;
       last = now;
-      if(visibleMs >= AUTO_MS){
+      if(visibleMs >= AUTO_MS && now - lastInput >= 5000){
         clearInterval(tick);
         if(!overlay.classList.contains('open')){ openSupport('auto'); store.set('supportDismissedAt', Date.now()); }
       }
-    }, 5000);
+    }, 1000);
   }
 })();
 </script>
