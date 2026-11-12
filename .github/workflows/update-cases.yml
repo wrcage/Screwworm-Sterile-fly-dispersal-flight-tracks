@@ -1,0 +1,68 @@
+name: Update cases (USDA)
+
+# Reads USDA APHIS's confirmed-case dashboard (Tableau) in headless Chromium
+# and writes cases.json: one record per confirmed animal case / fly-trap
+# detection, placed inside its county. No FR24 credits involved.
+# USDA says the dashboard updates ~6 PM ET; this runs at 01:20 UTC
+# (7:20 PM CST / 8:20 PM CDT).
+
+on:
+  schedule:
+    - cron: "20 1 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no commit)?"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: update-cases
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install headless browser
+        run: |
+          pip install -q playwright
+          python -m playwright install --with-deps chromium > /dev/null
+      - name: Run case updater
+        env:
+          COMMIT: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '0' || '1' }}
+        run: python update_cases.py
+      - name: Commit & push if changed
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        run: |
+          if [[ -n "$(git status --porcelain cases.json)" ]]; then
+            git config user.name  "case-update-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add cases.json
+            git commit -m "Auto: USDA case update ($(date -u +%Y-%m-%d))"
+            git pull --rebase origin main
+            git push
+          else
+            echo "No change."
+          fi
+      - name: Open an issue on failure
+        if: failure()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `USDA case updater failed (${new Date().toISOString().slice(0,10)})`,
+              body: ["The USDA case updater failed. The map keeps showing the last good cases.json.",
+                     "", "Likely causes: USDA changed or moved the Tableau dashboard, or the page was down.",
+                     "", `[View the failed run](${run})`].join("\n")
+            });
