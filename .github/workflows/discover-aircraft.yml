@@ -14,6 +14,10 @@ on:
         description: "How many days back to search (max 30)"
         type: string
         default: "10"
+      inspect:
+        description: "Optional: registrations to inspect tracks for (e.g. N75Z,XCROK)"
+        type: string
+        default: ""
   push:
     branches: [main]
     paths: ["discover-request.json"]
@@ -37,4 +41,8 @@ jobs:
           if [ -z "$DAYS" ] && [ -f discover-request.json ]; then
             DAYS=$(python -c "import json;print(json.load(open('discover-request.json')).get('days',10))")
           fi
-          python discover_aircraft.py --days "${DAYS:-10}"
+          if [ -n "${{ inputs.inspect }}" ]; then
+            python discover_aircraft.py --days "${DAYS:-10}" --inspect "${{ inputs.inspect }}"
+          else
+            python discover_aircraft.py --days "${DAYS:-10}"
+          fi

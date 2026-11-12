@@ -70,10 +70,52 @@ def hours(f):
         return None
 
 
+def inspect(regs, days):
+    """Fetch tracks for long flights of the given registrations and report
+    path/straight ratio, turn count and area — a grid (dispersal) pattern
+    has a high ratio and dozens of ~180 degree reversals."""
+    regs = [r.strip().upper().replace("-", "") for r in regs if r.strip()]
+    flights = summary({"registrations": ",".join(regs[:15])}, days)
+    lines = ["## Track inspection (last %d days)" % days, "",
+             "| reg | date | route | hours | path mi | straight mi | path/straight | reversals | lat range | lon range | alt mode ft |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for f in sorted(flights, key=lambda x: x.get("datetime_takeoff") or ""):
+        h = hours(f)
+        if h is None or h < LONG_H:
+            continue
+        pts = uf.fetch_track(f.get("fr24_id"))
+        c = [[float(p["lat"]), float(p["lon"]), p.get("alt") or 0] for p in pts if "lat" in p]
+        if len(c) < 10:
+            continue
+        path, straight, ratio = uf.straightness(c)
+        # count heading reversals (> 150 degrees change over ~10 points)
+        import math
+        hd = [math.degrees(math.atan2(c[i+5][1]-c[i][1], c[i+5][0]-c[i][0])) for i in range(0, len(c)-5, 5)]
+        rev = sum(1 for i in range(len(hd)-2) if abs((hd[i+2]-hd[i]+180) % 360 - 180) > 150)
+        alts = [round(p[2], -2) for p in c if p[2] and p[2] > 1500]
+        mode = max(set(alts), key=alts.count) if alts else 0
+        lines.append("| %s | %s | %s→%s | %.1f | %.0f | %.0f | %.2f | %d | %.2f–%.2f | %.2f–%.2f | %d |" % (
+            f.get("reg"), (f.get("datetime_takeoff") or "")[:10], f.get("orig_icao") or "?",
+            f.get("dest_icao") or "?", h, path, straight, ratio, rev,
+            min(p[0] for p in c), max(p[0] for p in c), min(p[1] for p in c), max(p[1] for p in c), mode))
+    text = "\n".join(lines)
+    print("\n" + text)
+    sp = os.environ.get("GITHUB_STEP_SUMMARY")
+    if sp:
+        with open(sp, "a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=10)
+    ap.add_argument("--inspect", default="",
+                    help="Comma-separated registrations: fetch tracks (40 credits each) "
+                         "of their >=3.5 h flights and report whether they fly a grid.")
     args = ap.parse_args()
+    if args.inspect:
+        return inspect(args.inspect.split(","), args.days)
     known = set(uf.TAILS)
 
     before = usage_total()
