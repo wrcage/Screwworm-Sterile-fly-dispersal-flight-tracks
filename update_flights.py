@@ -397,8 +397,17 @@ def fetch_summary_for_date(date_obj):
 
 
 def fetch_track(fr24_id):
-    """Return the list of point dicts for the given flight ID."""
-    result = fr24_get("/flight-tracks", {"flight_id": fr24_id})
+    """Return the list of point dicts for the given flight ID. A 404 ("flight
+    could not be found") means FR24 has no track for this one flight: return
+    [] so the caller skips it rather than aborting the whole run (that killed
+    the 2026-11-12 backfill and discarded everything fetched before it)."""
+    try:
+        result = fr24_get("/flight-tracks", {"flight_id": fr24_id})
+    except RuntimeError as e:
+        if "HTTP 404" in str(e):
+            log("      FR24 has no track for " + str(fr24_id) + " (404); skipping it")
+            return []
+        raise
     if isinstance(result, list):
         items = result
     else:
@@ -628,84 +637,94 @@ def main(argv=None):
     dup_count   = 0
     unknown_callsign_count = 0
 
-    for target_date in dates:
-        log("=" * 60)
-        log("Processing " + target_date.isoformat())
-        summaries = fetch_summary_for_date(target_date)
-        log("  summary returned " + str(len(summaries)) + " flight(s)")
+    try:
+        for target_date in dates:
+            log("=" * 60)
+            log("Processing " + target_date.isoformat())
+            summaries = fetch_summary_for_date(target_date)
+            log("  summary returned " + str(len(summaries)) + " flight(s)")
 
-        for s in summaries:
-            fid      = s.get("fr24_id")
-            callsign = (s.get("callsign") or "").strip().upper()
-            takeoff  = s.get("datetime_takeoff")
-            landing  = s.get("datetime_landed")
-            orig     = s.get("orig_icao") or s.get("orig_iata") or "?"
-            dest     = s.get("dest_icao") or s.get("dest_iata") or "?"
+            for s in summaries:
+                fid      = s.get("fr24_id")
+                callsign = (s.get("callsign") or "").strip().upper()
+                takeoff  = s.get("datetime_takeoff")
+                landing  = s.get("datetime_landed")
+                orig     = s.get("orig_icao") or s.get("orig_iata") or "?"
+                dest     = s.get("dest_icao") or s.get("dest_iata") or "?"
 
-            # Identify the tail from callsign. Our fleet uses tail == callsign.
-            if callsign in TAILS:
-                tail = callsign
-            else:
-                unknown_callsign_count += 1
-                log("    skip: unknown callsign " + repr(callsign)
-                    + " (fr24_id=" + str(fid) + ")")
-                continue
+                # Identify the tail from callsign. Our fleet uses tail == callsign.
+                if callsign in TAILS:
+                    tail = callsign
+                else:
+                    unknown_callsign_count += 1
+                    log("    skip: unknown callsign " + repr(callsign)
+                        + " (fr24_id=" + str(fid) + ")")
+                    continue
 
-            if fid and fid in existing_fr24_ids:
-                dup_count += 1
-                log("    skip: fr24_id " + fid + " already in history (" + tail + ")")
-                continue
+                if fid and fid in existing_fr24_ids:
+                    dup_count += 1
+                    log("    skip: fr24_id " + fid + " already in history (" + tail + ")")
+                    continue
 
-            try:
-                t0 = parse_iso(takeoff)
-                t1 = parse_iso(landing)
-                dur_h = (t1 - t0).total_seconds() / 3600.0
-            except (TypeError, ValueError, AttributeError):
-                # Most common cause: datetime_landed is null because the flight
-                # wasn't finalized when we queried (still airborne, or FR24
-                # hasn't closed it out). We can't compute duration, so we can't
-                # tell drop from ferry — skip safely. A later run (or the next
-                # day's run) will pick it up once FR24 finalizes it.
-                log("    skip: missing/invalid timestamps for fr24_id " + str(fid)
-                    + " (takeoff=" + repr(takeoff) + " landing=" + repr(landing) + ")")
-                continue
+                try:
+                    t0 = parse_iso(takeoff)
+                    t1 = parse_iso(landing)
+                    dur_h = (t1 - t0).total_seconds() / 3600.0
+                except (TypeError, ValueError, AttributeError):
+                    # Most common cause: datetime_landed is null because the flight
+                    # wasn't finalized when we queried (still airborne, or FR24
+                    # hasn't closed it out). We can't compute duration, so we can't
+                    # tell drop from ferry — skip safely. A later run (or the next
+                    # day's run) will pick it up once FR24 finalizes it.
+                    log("    skip: missing/invalid timestamps for fr24_id " + str(fid)
+                        + " (takeoff=" + repr(takeoff) + " landing=" + repr(landing) + ")")
+                    continue
 
-            if dur_h < FERRY_HOURS_MAX:
-                ferry_count += 1
-                log("    ferry: " + tail + " fr24_id=" + str(fid)
+                if dur_h < FERRY_HOURS_MAX:
+                    ferry_count += 1
+                    log("    ferry: " + tail + " fr24_id=" + str(fid)
+                        + " " + orig + "->" + dest
+                        + " dur=" + ("%.2f" % dur_h) + "h  (skipped, no track fetch)")
+                    continue
+
+                log("    drop:  " + tail + " fr24_id=" + str(fid)
                     + " " + orig + "->" + dest
-                    + " dur=" + ("%.2f" % dur_h) + "h  (skipped, no track fetch)")
-                continue
-
-            log("    drop:  " + tail + " fr24_id=" + str(fid)
-                + " " + orig + "->" + dest
-                + " dur=" + ("%.2f" % dur_h) + "h  (fetching track...)")
-            track = fetch_track(fid)
-            if not track:
-                log("      warning: empty track returned; skipping")
-                continue
-            record = build_flight_record(s, track, tail)
-            if record is None:
-                log("      warning: could not build record; skipping")
-                continue
-            if is_long_ferry(record["coords"]):
-                _, st, ra = straightness(record["coords"])
-                ferry_count += 1
-                log("      ferry (straight %.0f mi, path/straight %.2f): %s — rejected"
-                    % (st, ra, record["name"]))
+                    + " dur=" + ("%.2f" % dur_h) + "h  (fetching track...)")
+                track = fetch_track(fid)
+                if not track:
+                    log("      warning: empty track returned; skipping")
+                    continue
+                record = build_flight_record(s, track, tail)
+                if record is None:
+                    log("      warning: could not build record; skipping")
+                    continue
+                if is_long_ferry(record["coords"]):
+                    _, st, ra = straightness(record["coords"])
+                    ferry_count += 1
+                    log("      ferry (straight %.0f mi, path/straight %.2f): %s — rejected"
+                        % (st, ra, record["name"]))
+                    if fid:
+                        rejected.append(fid)
+                        existing_fr24_ids.add(fid)
+                    continue
+                log("      built record: name=" + repr(record["name"])
+                    + " day=" + str(record["day"])
+                    + " raw_pts=" + str(len(track))
+                    + " kept_pts=" + str(len(record["coords"])))
+                new_flights.append(record)
+                # In-memory dedup so a run that spans multiple dates doesn't re-add
+                # the same flight if it appears twice in the summary (edge case).
                 if fid:
-                    rejected.append(fid)
                     existing_fr24_ids.add(fid)
-                continue
-            log("      built record: name=" + repr(record["name"])
-                + " day=" + str(record["day"])
-                + " raw_pts=" + str(len(track))
-                + " kept_pts=" + str(len(record["coords"])))
-            new_flights.append(record)
-            # In-memory dedup so a run that spans multiple dates doesn't re-add
-            # the same flight if it appears twice in the summary (edge case).
-            if fid:
-                existing_fr24_ids.add(fid)
+    except Exception as e:
+        # Keep whatever was fetched before the failure so its credits are not
+        # wasted; the next run continues from there (dedup skips these).
+        log("FATAL mid-run: " + str(e))
+        if args.commit and (new_flights or _rejected_changed(history, rejected)):
+            history["flights"].extend(new_flights)
+            write_history(history, args.history)
+            log("Saved " + str(len(new_flights)) + " flight(s) fetched before the failure.")
+        raise
 
     log("=" * 60)
     log("Summary:")

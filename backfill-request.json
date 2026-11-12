@@ -1,1 +1,1 @@
-{"date_from": "2026-10-14", "date_to": "2026-11-12", "reason": "fill days skipped by the old yesterday-only updater"}
+{"date_from": "2026-10-14", "date_to": "2026-11-12", "reason": "retry after making track 404s non-fatal"}
