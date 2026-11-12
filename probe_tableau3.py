@@ -25,6 +25,38 @@ async def main():
         await pg.goto(URL, wait_until="load", timeout=120000)
         await pg.wait_for_timeout(20000)   # Tableau keeps a socket open; never "idle"
         await pg.screenshot(path="tableau_view.png", full_page=True)
+        # Try the dashboard's own download buttons and capture the file.
+        for label in ("ExportToCSV", "Download Data"):
+            loc = pg.get_by_text(label, exact=True)
+            n = await loc.count()
+            print("BUTTON %r matches: %d" % (label, n))
+            if not n:
+                continue
+            try:
+                async with pg.expect_download(timeout=45000) as dl_info:
+                    await loc.first.click()
+                dl = await dl_info.value
+                path = "download_" + re.sub(r"\W+", "_", label) + "_" + (dl.suggested_filename or "file")
+                await dl.save_as(path)
+                data = open(path, "rb").read()
+                print("DOWNLOADED via %r: %s (%d bytes)" % (label, dl.suggested_filename, len(data)))
+                for enc in ("utf-8-sig", "utf-16"):
+                    try:
+                        t = data.decode(enc); break
+                    except Exception:
+                        t = data.decode("latin-1")
+                lines = t.splitlines()
+                print("ROWS:", len(lines))
+                for ln in lines[:12] + ["..."] + lines[-5:]:
+                    print("  " + ln[:300])
+                break
+            except Exception as e:
+                print("click/download via %r failed: %s" % (label, str(e)[:300]))
+                # maybe it opened a dialog; dump visible dialog text
+                try:
+                    print("AFTER CLICK TEXT:", re.sub(r"\s+", " ", await pg.inner_text("body"))[:800])
+                except Exception:
+                    pass
         print("TITLE:", await pg.title())
         try:
             txt = await pg.inner_text("body")
@@ -37,8 +69,8 @@ asyncio.run(main())
 big = ""
 for u, st, t in captured:
     print("RESP %s %d %d bytes" % (u[:160], st, len(t)))
-    if "bootstrapSession" in u or len(t) > len(big):
-        big = t if len(t) > len(big) else big
+    if "bootstrapSession" in u:
+        big = t
 open("tableau_bootstrap.txt", "w").write(big)
 print("\nBOOTSTRAP bytes:", len(big))
 for key in ("worksheet", "sheetName", "fieldCaption", "caption"):
