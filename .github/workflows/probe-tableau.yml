@@ -26,3 +26,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: python probe_tableau.py "${{ inputs.page }}" ${{ inputs.extra }}
+      - name: Inspect workbook sheets (tableauscraper)
+        if: ${{ inputs.extra != '' }}
+        run: |
+          pip install -q tableauscraper
+          for u in ${{ inputs.extra }}; do python probe_tableau2.py "$u"; done
