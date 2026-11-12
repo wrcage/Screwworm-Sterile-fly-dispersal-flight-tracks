@@ -25,9 +25,16 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python probe_tableau.py "${{ inputs.page }}" ${{ inputs.extra }}
+      # URLs go through env vars: they contain '&', which the shell would
+      # otherwise treat as "run in background".
+      - env:
+          PAGE: ${{ inputs.page }}
+          EXTRA: ${{ inputs.extra }}
+        run: python probe_tableau.py "$PAGE" $EXTRA
       - name: Inspect workbook sheets (tableauscraper)
         if: ${{ inputs.extra != '' }}
+        env:
+          EXTRA: ${{ inputs.extra }}
         run: |
           pip install -q tableauscraper
-          for u in ${{ inputs.extra }}; do python probe_tableau2.py "$u"; done
+          for u in $EXTRA; do python probe_tableau2.py "$u"; done
