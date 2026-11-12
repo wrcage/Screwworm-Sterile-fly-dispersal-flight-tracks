@@ -23,14 +23,26 @@ for name, val in re.findall(r'<param\s+name=["\'](\w+)["\']\s+value=["\']([^"\']
     print("PARAM", name, "=", val)
 for c in sorted(cands):
     print("URL:", c)
-views = [u for u in cands if "/views/" in u] + sys.argv[2:]
+views = [u.replace("&amp;", "&") for u in cands if "/views/" in u] + sys.argv[2:]
+# List the workbook's sheets/views from the dashboard page bootstrap data.
+for v in list(views):
+    base = v.split("?")[0]
+    try:
+        st, ct, b = get(base + "?:embed=y&:showVizHome=no")
+        t = b.decode("utf-8", "replace")
+        names = sorted(set(re.findall(r'"(?:sheetName|sheet_name|name|repositoryUrl|viewName)"\s*:\s*"([^"]{2,80})"', t)))
+        print("VIEW PAGE", st, len(t), "bytes; candidate sheet names:", names[:80])
+        for m in sorted(set(re.findall(r'views/[A-Za-z0-9_]+/[A-Za-z0-9_%]+', t)))[:40]:
+            print("  view ref:", m)
+    except Exception as e:
+        print("VIEW PAGE FAIL", e)
 for v in views:
     base = v.split("?")[0].rstrip("/")
     for cand in (base + ".csv", base + ".csv?:showVizHome=no", base + "?:format=csv"):
         try:
             st, ct, b = get(cand)
-            txt = b[:1500].decode("utf-8", "replace")
+            txt = b[:3000].decode("utf-8", "replace")
             print("\nTRY", cand, "->", st, ct, len(b), "bytes")
-            print(txt[:1500])
+            print(txt[:3000])
         except Exception as e:
             print("\nTRY", cand, "-> FAIL", e)
