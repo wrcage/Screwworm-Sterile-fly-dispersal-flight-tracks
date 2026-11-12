@@ -116,7 +116,7 @@
   <div class="sub">Flight data provided by <b>Flightradar24</b></div>
   <div class="allrow"><label><input type="checkbox" id="allFlightsCb" checked> All flights</label></div>
   <div id="legend"></div>
-  <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Dashed lime green = non-US aircraft (Guatemalan tails flying out of Tampico). Yellow = infested zone, blue = surveillance (Texas: TAHC; New Mexico: NM Livestock Board / NMSU map). Green = flight start, red = end. Basemap switch is top-right.</div>
+  <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Dashed lime green = non-US aircraft (Guatemalan tails flying out of Tampico). Yellow = infested zone, blue = surveillance. Sources: Texas = TAHC; New Mexico = NM Livestock Board / NMSU map; Arizona = public Google My Map "New World Screwworm" (unofficial, no stated author). Green = flight start, red = end. Basemap switch is top-right.</div>
   <div class="hint" style="border-top:none;padding-top:4px;">Contact: William Cage - wrcage@gmail.com</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
@@ -372,16 +372,19 @@ async function loadZones(){
 // users can see county borders even when the basemap doesn't render them.
 // No legend toggle (always on) — this is reference cartography, not a layer.
 async function loadCounties(){
-  try {
-    const res = await fetch('counties-tx.geojson');
-    const fc = await res.json();
-    L.geoJSON(fc, {
-      pane: 'countyPane',
-      style: {color:'#4b5563', weight:0.6, opacity:0.55, fill:false},
-      interactive: false
-    }).addTo(map);
-  } catch(err) {
-    console.error('Failed to load counties-tx.geojson:', err);
+  // Texas plus New Mexico and Arizona (zones now come from all three states).
+  for (const file of ['counties-tx.geojson', 'counties-nm-az.geojson']){
+    try {
+      const res = await fetch(file);
+      const fc = await res.json();
+      L.geoJSON(fc, {
+        pane: 'countyPane',
+        style: {color:'#4b5563', weight:0.6, opacity:0.55, fill:false},
+        interactive: false
+      }).addTo(map);
+    } catch(err) {
+      console.error('Failed to load ' + file + ':', err);
+    }
   }
 }
 
@@ -517,7 +520,7 @@ winRow.addEventListener('click', ev=>{
 // kept for compat with any old code paths referencing zoneLayers
 const zoneLayers={};
 // zone legend section
-legend.insertAdjacentHTML('beforeend','<div class="achdr">NWS zones (TAHC + New Mexico)</div>');
+legend.insertAdjacentHTML('beforeend','<div class="achdr">NWS zones (TX, NM, AZ)</div>');
 [['inf','Infested zone','#fbbf24','solid'],['surv','Surveillance zone','#3b82f6','solid']].forEach(z=>{
   const row=document.createElement('div'); row.className='row';
   row.innerHTML='<input type="checkbox" id="z_'+z[0]+'" checked>'+

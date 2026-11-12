@@ -287,18 +287,35 @@ def _nm_dissolved_geometry(url):
            {"type": "MultiPolygon", "coordinates": polys}
 
 
+def _merge_geoms(geoms):
+    polys = []
+    for g in geoms:
+        polys.extend([g["coordinates"]] if g["type"] == "Polygon" else g["coordinates"])
+    return {"type": "Polygon", "coordinates": polys[0]} if len(polys) == 1 else \
+           {"type": "MultiPolygon", "coordinates": polys}
+
+
 def fetch_nm_zones():
-    """Current NM zones keyed like fetch_live_zones(): {gid: {...}}."""
+    """Current NM zones keyed like fetch_live_zones(): {gid: {...}}.
+    All VISIBLE layers of a kind are merged (newest per base name, so a
+    still-visible older dated copy of the same layer isn't double counted)."""
     layers = [L for L in nm_zone_layers() if L[2]]
     out = {}
     for kind in (ZONE_NAME_INFESTED, ZONE_NAME_SURVEILLANCE):
-        mine = sorted((L for L in layers if L[3] == kind), key=lambda L: L[4] or "")
-        if not mine:
+        newest = {}
+        for L in layers:
+            if L[3] != kind:
+                continue
+            base = re.sub(r"_?20\d{6}$", "", L[0])
+            if base not in newest or (L[4] or "") > (newest[base][4] or ""):
+                newest[base] = L
+        if not newest:
             continue
-        L = mine[-1]                              # newest visible layer of this kind
-        out[NM_GID[kind]] = {"oid": "NM:" + L[0], "zone_name": kind,
-                             "geometry": _nm_dissolved_geometry(L[1])}
-        print(f"  NM {('infested' if kind == 1 else 'surveillance')}: {L[0]}")
+        names = sorted(L[0] for L in newest.values())
+        out[NM_GID[kind]] = {"oid": "NM:" + "+".join(names), "zone_name": kind,
+                             "geometry": _merge_geoms([_nm_dissolved_geometry(L[1])
+                                                       for L in newest.values()])}
+        print(f"  NM {('infested' if kind == 1 else 'surveillance')}: {', '.join(names)}")
     return out
 
 
@@ -332,6 +349,107 @@ def nm_backfill(history, layer_dates_override=None):
                               "geometry": geoms[title]})
             snap[fc_name]["features"] = feats
     return dated
+
+
+# --- Arizona zones (Google My Maps "New World Screwworm") --------------------
+#
+# No official Arizona feed was found (Nov 2026). This public Google My Map
+# carries Arizona layers ("Arizona Infested Zones", "Arizona Surveillance
+# Zone"); its New Mexico layers duplicate NMSU's and are ignored. It is a
+# hand-maintained map with no stated author, so treat it as a secondary source.
+# Each placemark is one zone. Its id is name + rounded centroid, so a zone
+# that is redrawn in place keeps its id (reshape) while a moved/new zone gets
+# a new one. Placemark descriptions list confirmation dates ("Confirmed in
+# Equine (Nov 1, 2026)"); the earliest one is used as the zone's start date.
+
+AZ_KML_URL = "https://www.google.com/maps/d/kml?mid=1upFvZ2xYuIndXRVuh3PqaeVgD23hYLU&forcekml=1"
+_KML_NS = "{http://www.opengis.net/kml/2.2}"
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def _kml_polygons(pm):
+    polys = []
+    for poly in pm.iter(_KML_NS + "Polygon"):
+        rings = []
+        for tag in ("outerBoundaryIs", "innerBoundaryIs"):
+            for b in poly.iter(_KML_NS + tag):
+                for c in b.iter(_KML_NS + "coordinates"):
+                    ring = []
+                    for tok in (c.text or "").split():
+                        p = tok.split(",")
+                        if len(p) >= 2:
+                            ring.append([float(p[0]), float(p[1])])
+                    if len(ring) >= 4:
+                        rings.append(ring)
+        if rings:
+            polys.append(rings)
+    return polys
+
+
+def _desc_dates(text):
+    out = []
+    for m in re.finditer(r"([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),\s*(20\d\d)", text or ""):
+        mo = _MONTHS.get(m.group(1).lower()[:3])
+        if mo:
+            out.append(dt.date(int(m.group(3)), mo, int(m.group(2))).isoformat())
+    return sorted(out)
+
+
+def fetch_az_zones():
+    """{gid: {"oid", "zone_name", "geometry", "first_date"}} for Arizona."""
+    import xml.etree.ElementTree as ET
+    req = urllib.request.Request(AZ_KML_URL, headers={"User-Agent": "Mozilla/5.0 nws-zone-updater/1.0"})
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        root = ET.fromstring(resp.read())
+    out = {}
+    for folder in root.iter(_KML_NS + "Folder"):
+        fname = (folder.findtext(_KML_NS + "name") or "").strip()
+        if "arizona" not in fname.lower():
+            continue
+        kind = ZONE_NAME_SURVEILLANCE if "surveil" in fname.lower() else ZONE_NAME_INFESTED
+        for pm in folder.iter(_KML_NS + "Placemark"):
+            polys = _kml_polygons(pm)
+            if not polys:
+                continue
+            name = (pm.findtext(_KML_NS + "name") or "zone").strip()
+            pts = [p for poly in polys for p in poly[0]]
+            clon = sum(p[0] for p in pts) / len(pts)
+            clat = sum(p[1] for p in pts) / len(pts)
+            slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40]
+            gid = "AZ:%s:%s:%.1f,%.1f" % ("inf" if kind == 1 else "surv", slug, clat, clon)
+            geom = {"type": "Polygon", "coordinates": polys[0]} if len(polys) == 1 else \
+                   {"type": "MultiPolygon", "coordinates": polys}
+            dates = _desc_dates(pm.findtext(_KML_NS + "description") or "")
+            out[gid] = {"oid": "AZ:" + name, "zone_name": kind, "geometry": geom,
+                        "first_date": dates[0] if dates else None}
+    if not out:
+        raise ValueError("Arizona KML had no Arizona zones")
+    for g, z in out.items():
+        print(f"  AZ {g} first={z['first_date']}")
+    return out
+
+
+def az_backfill(history):
+    """One-time: add today's Arizona zones to existing snapshots from each
+    zone's first confirmation date (surveillance: earliest infested date)."""
+    zones = fetch_az_zones()
+    inf_dates = [z["first_date"] for z in zones.values() if z["first_date"]]
+    for z in zones.values():
+        if not z["first_date"]:
+            z["first_date"] = min(inf_dates) if inf_dates else history["snapshots"][-1]["date"]
+    for snap in history["snapshots"]:
+        for kind, fc_name in ((ZONE_NAME_INFESTED, "infested"), (ZONE_NAME_SURVEILLANCE, "surveillance")):
+            feats = [f for f in snap[fc_name]["features"]
+                     if not str(f["properties"].get("globalId", "")).startswith("AZ:")]
+            for gid, z in zones.items():
+                if z["zone_name"] == kind and z["first_date"] <= snap["date"]:
+                    feats.append({"type": "Feature",
+                                  "properties": {"oid": z["oid"], "globalId": gid,
+                                                 "appearDay": _day(z["first_date"])},
+                                  "geometry": simplify_geometry(z["geometry"])})
+            snap[fc_name]["features"] = feats
+    return zones
 
 
 # --- Snapshot handling -------------------------------------------------------
@@ -440,6 +558,9 @@ def build_new_snapshot(history, live, today, appear_day):
     infested_feats, surv_feats = [], []
     for gid, z in live.items():
         appear = prev_appear.get(gid, appear_day)
+        if gid not in prev_appear and z.get("first_date"):
+            # e.g. Arizona: use the case confirmation date when it's earlier
+            appear = min(appear, _day(z["first_date"]))
         feat = {
             "type": "Feature",
             "properties": {"oid": z["oid"], "globalId": gid, "appearDay": appear},
@@ -478,6 +599,12 @@ def _day(date_str):
     return (dt.date.fromisoformat(date_str) - DAY_ZERO).days
 
 
+def _state(gid):
+    """'NM' / 'AZ' for prefixed ids, 'TX' for TAHC GlobalIDs."""
+    g = str(gid)
+    return g.split(":", 1)[0] if g[:3] in ("NM:", "AZ:") else "TX"
+
+
 def build_timeline(history):
     """Return {"generated","dayZero","lastDay","zones":[...]} where each zone
     entry is one geometry version: {kind, oid, gid, from, to, geometry}.
@@ -496,7 +623,7 @@ def build_timeline(history):
             feats = {f["properties"]["globalId"]: f
                      for f in (snap.get(kind) or {}).get("features", [])}
             removed = [g for g in open_v if g not in feats]
-            hand_dates = []
+            hand_dates = {}     # state -> [hand-corrected start days]
             for gid, f in feats.items():
                 p = f["properties"]
                 prev = open_v.get(gid)
@@ -510,8 +637,8 @@ def build_timeline(history):
                 else:                              # brand-new zone
                     a = p.get("appearDay")
                     if a is not None and a != LEGACY_BUG_DAY and a < d:
-                        start = a                  # deliberate hand correction
-                        hand_dates.append(a)
+                        start = a                  # hand correction / confirmation date
+                        hand_dates.setdefault(_state(gid), []).append(a)
                     else:
                         start = d                  # first day it was published
                 v = {"kind": kind, "oid": p.get("oid"), "gid": gid,
@@ -521,9 +648,9 @@ def build_timeline(history):
                 out.append(v)
             # A hand-dated newcomer that arrives together with a removal is a
             # replacement: retire the removed zone the day before it.
-            cut = (min(hand_dates) - 1) if hand_dates else None
             for gid in removed:
-                end = d - 1 if cut is None else min(d - 1, cut)
+                st = hand_dates.get(_state(gid))
+                end = d - 1 if not st else min(d - 1, min(st) - 1)
                 for v in all_v[gid]:
                     if v["to"] is None or v["to"] > end:
                         v["to"] = end
@@ -571,10 +698,22 @@ def main():
     ap.add_argument("--appear-day", type=int, default=None,
                     help="Timeline index to assign to newly-added zones. "
                          "Defaults to today's index (days since 2026-05-30).")
+    ap.add_argument("--az-backfill", action="store_true",
+                    help="One-time: add current Arizona zones to existing snapshots from their confirmation dates.")
     ap.add_argument("--nm-backfill", action="store_true",
                     help="One-time: add New Mexico's older dated zone layers to existing snapshots.")
     args = ap.parse_args()
     commit = args.commit or os.environ.get("COMMIT") == "1"
+    if args.az_backfill:
+        history = load_history(HISTORY_PATH)
+        az_backfill(history)
+        if commit:
+            with open(HISTORY_PATH, "w", encoding="utf-8") as f:
+                json.dump(history, f, separators=(",", ":"), ensure_ascii=True)
+            write_timeline(history)
+        else:
+            print("DRY RUN — nothing written.")
+        return 0
     if args.nm_backfill:
         history = load_history(HISTORY_PATH)
         # NM_IZ_02B_07_ASZ_All has no date in its name; it was last edited
@@ -610,6 +749,11 @@ def main():
         # Never let a New Mexico hiccup look like NM zones were lifted.
         print(f"WARNING: New Mexico zones unavailable ({e}); keeping previous NM state.")
         live.update({g: z for g, z in prev.items() if str(g).startswith("NM:")})
+    try:
+        live.update(fetch_az_zones())
+    except Exception as e:
+        print(f"WARNING: Arizona zones unavailable ({e}); keeping previous AZ state.")
+        live.update({g: z for g, z in prev.items() if str(g).startswith("AZ:")})
     added, removed, changed, notes = diff_zones(live, prev)
 
     print(f"== Zone check {today} ==")
