@@ -1,0 +1,40 @@
+name: Discover untracked aircraft
+
+# Read-only search for sterile-fly-type aircraft that are NOT in the tracked
+# tail list. Changes nothing in the map data; results appear in the run log
+# and on the run's Summary page. Costs FR24 credits (4 per result, capped).
+#
+# Run it: Actions -> "Discover untracked aircraft" -> Run workflow,
+# or commit a change to discover-request.json (e.g. {"days": 10}).
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How many days back to search (max 30)"
+        type: string
+        default: "10"
+  push:
+    branches: [main]
+    paths: ["discover-request.json"]
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Search FR24 for untracked aircraft
+        env:
+          FR24_API_KEY: ${{ secrets.FR24_API_KEY }}
+        run: |
+          DAYS="${{ inputs.days }}"
+          if [ -z "$DAYS" ] && [ -f discover-request.json ]; then
+            DAYS=$(python -c "import json;print(json.load(open('discover-request.json')).get('days',10))")
+          fi
+          python discover_aircraft.py --days "${DAYS:-10}"
