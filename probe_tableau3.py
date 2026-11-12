@@ -76,9 +76,5 @@ print("\nBOOTSTRAP bytes:", len(big))
 for key in ("worksheet", "sheetName", "fieldCaption", "caption"):
     vals = sorted(set(re.findall(r'"%s"\s*:\s*"([^"]{1,80})"' % key, big)))
     print("%s (%d): %s" % (key, len(vals), vals[:120]))
-# string values in the data dictionary (cities/counties/species show up here)
-m = re.search(r'"dataValues"\s*:\s*(\[.*?\])\s*[,}]', big)
-strs = re.findall(r'"cstring"[^]]*?"dataValues"\s*:\s*\[([^\]]*)\]', big)
-for s_ in strs[:3]:
-    vals = json.loads("[" + s_ + "]")
-    print("\nCSTRING values (%d): %s" % (len(vals), vals[:200]))
+import subprocess
+subprocess.run([sys.executable, "tableau_decode.py", "tableau_bootstrap.txt"])
