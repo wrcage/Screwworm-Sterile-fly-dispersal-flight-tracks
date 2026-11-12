@@ -27,10 +27,12 @@ from collections import defaultdict
 
 import update_flights as uf
 
-STAGING_AIRPORTS = ["KEBG", "KUVA", "KDRT", "KE38", "KPEQ", "KSJT", "KFST",
+# FR24's airport filter rejects codes containing digits (KE38 Alpine, 5T9
+# Eagle Pass): HTTP 400 "airports.N field format is invalid". Letters only.
+STAGING_AIRPORTS = ["KEBG", "KUVA", "KDRT", "KPEQ", "KSJT", "KFST", "KMRF",
                     "KLRD", "KCVB", "MMTM", "MMAN", "MMHO", "MMCS", "MMNL",
                     "MMPG"]                      # FR24 allows max 15
-SMALL_FIELDS = ["KEBG", "KUVA", "KE38"]           # GA fields: any type is OK
+SMALL_FIELDS = ["KEBG", "KUVA", "KMRF"]           # GA fields: any type is OK
 FALLBACK_TYPES = ["BE9L"]
 LIMIT_TYPE_QUERY = 300
 LIMIT_ANY_QUERY = 250
