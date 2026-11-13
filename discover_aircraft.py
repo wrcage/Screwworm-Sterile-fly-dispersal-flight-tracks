@@ -107,13 +107,51 @@ def inspect(regs, days):
     return 0
 
 
+def find(ids, days):
+    """Look an aircraft up by callsign AND by registration (4 credits/result)
+    and list what FR24 has: reg, callsign, type, route, hours."""
+    ids = [x.strip().upper() for x in ids if x.strip()]
+    rows = []
+    for key in ("callsigns", "registrations"):
+        try:
+            rows += [(key, f) for f in summary({key: ",".join(ids[:15])}, days)]
+        except Exception as e:
+            print("%s query failed: %s" % (key, e))
+    lines = ["## Find %s (last %d days)" % (", ".join(ids), days), "",
+             "| matched by | date | reg | callsign | type | hex | route | hours |",
+             "|---|---|---|---|---|---|---|---|"]
+    seen = set()
+    for key, f in sorted(rows, key=lambda r: r[1].get("datetime_takeoff") or ""):
+        if f.get("fr24_id") in seen:
+            continue
+        seen.add(f.get("fr24_id"))
+        h = hours(f)
+        lines.append("| %s | %s | %s | %s | %s | %s | %s→%s | %s |" % (
+            key, (f.get("datetime_takeoff") or "")[:10], f.get("reg"), f.get("callsign"),
+            f.get("type"), f.get("hex"), f.get("orig_icao") or "?", f.get("dest_icao") or "?",
+            "%.1f" % h if h is not None else "?"))
+    if not seen:
+        lines.append("| (nothing found) | | | | | | | |")
+    text = "\n".join(lines)
+    print("\n" + text)
+    sp = os.environ.get("GITHUB_STEP_SUMMARY")
+    if sp:
+        with open(sp, "a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--find", default="",
+                    help="Comma-separated IDs to look up by callsign and registration.")
     ap.add_argument("--days", type=int, default=10)
     ap.add_argument("--inspect", default="",
                     help="Comma-separated registrations: fetch tracks (40 credits each) "
                          "of their >=3.5 h flights and report whether they fly a grid.")
     args = ap.parse_args()
+    if args.find:
+        return find(args.find.split(","), args.days)
     if args.inspect:
         return inspect(args.inspect.split(","), args.days)
     known = set(uf.TAILS)

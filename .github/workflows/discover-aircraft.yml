@@ -18,6 +18,10 @@ on:
         description: "Optional: registrations to inspect tracks for (e.g. N75Z,XCROK)"
         type: string
         default: ""
+      find:
+        description: "Optional: look up IDs by callsign and registration (e.g. N72J)"
+        type: string
+        default: ""
   push:
     branches: [main]
     paths: ["discover-request.json"]
@@ -41,7 +45,9 @@ jobs:
           if [ -z "$DAYS" ] && [ -f discover-request.json ]; then
             DAYS=$(python -c "import json;print(json.load(open('discover-request.json')).get('days',10))")
           fi
-          if [ -n "${{ inputs.inspect }}" ]; then
+          if [ -n "${{ inputs.find }}" ]; then
+            python discover_aircraft.py --days "${DAYS:-10}" --find "${{ inputs.find }}"
+          elif [ -n "${{ inputs.inspect }}" ]; then
             python discover_aircraft.py --days "${DAYS:-10}" --inspect "${{ inputs.inspect }}"
           else
             python discover_aircraft.py --days "${DAYS:-10}"
