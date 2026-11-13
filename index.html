@@ -104,19 +104,21 @@
 
   /* --- Confirmed cases (USDA) ---------------------------------------- */
   .case-pop-wrap{background:none;border:none;}
-  /* "Pop": a filled, see-through disc that swells and fades (no rings).
-     Max size ~34px — 40% of the first preview's expansion. */
-  .case-pop{position:absolute;left:-17px;top:-17px;width:34px;height:34px;border-radius:50%;
-    background:rgba(220,38,38,.45);pointer-events:none;
-    animation:casepop 1.2s ease-out forwards;}
-  .case-pop.trap{background:rgba(220,38,38,.28);}
-  @keyframes casepop{0%{transform:scale(.25);opacity:.9}60%{opacity:.55}100%{transform:scale(1);opacity:0}}
+  /* "Pop": a filled red disc that swells and fades (no rings). ~46px max,
+     mostly opaque so a new case is easy to spot (William, 2026-11-13). */
+  .case-pop{position:absolute;left:-23px;top:-23px;width:46px;height:46px;border-radius:50%;
+    background:rgba(220,38,38,.72);pointer-events:none;
+    animation:casepop 1.3s ease-out forwards;}
+  .case-pop.trap{background:rgba(220,38,38,.45);}
+  @keyframes casepop{0%{transform:scale(.2);opacity:1}55%{opacity:.8}100%{transform:scale(1);opacity:0}}
   .case-sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;
     vertical-align:middle;flex:none;box-sizing:border-box;}
   .case-key{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;color:#4b5563;margin:2px 0 4px 24px;}
   .case-key span{display:inline-flex;align-items:center;}
   #t-play{font-size:15px;padding:0 0 0 2px;}
   #t-play.playing{background:#2563eb;color:#fff;padding:0;}
+  #t-speed.active{background:#dbeafe;color:#1d4ed8;}
+  #t-speed{width:34px;font:700 12px -apple-system,Segoe UI,Roboto,sans-serif;}
 
   /* --- Support this map ---------------------------------------------- */
   .support-btn{background:#fff;border:none;border-radius:8px;padding:6px 10px;
@@ -151,6 +153,7 @@
 <body>
 <div id="timeline"><div id="t-row">
   <button class="t-step" id="t-play" type="button" aria-label="Play through the days">&#9654;</button>
+  <button class="t-step" id="t-speed" type="button" aria-label="Playback speed">1&times;</button>
   <button class="t-step" id="t-prev" type="button" aria-label="Previous day">&#8249;</button>
   <div id="t-track">
     <div id="t-bubble">&hellip;</div>
@@ -205,7 +208,7 @@
   <div class="sub">Flight data provided by <b>Flightradar24</b></div>
   <div class="allrow"><label><input type="checkbox" id="allFlightsCb" checked> All flights</label><a class="support-link" onclick="openSupport('legend')">&#9829; Support this map</a></div>
   <div id="legend"></div>
-  <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Dashed lime green = non-US aircraft (Guatemalan tails flying out of Tampico). Yellow = infested zone, blue = surveillance. Sources: Texas = TAHC; New Mexico = NM Livestock Board / NMSU map; Arizona = public Google My Map "New World Screwworm" (unofficial, no stated author). Small grey dots = flight start/end points. Red dots = confirmed cases (USDA), placed within the county (not exact locations); hollow red rings = fly-trap detections. Basemap switch is top-right.</div>
+  <div class="hint">Tick a tail's checkbox to show or hide all its flights; tap the tail name to expand its flight list. Tap a flight name to zoom and jump the timeline to that day. Use the Flights pills under the slider to show only recent flights (zones always stay). Each active tail has its own color; less-active tails share grey. Dashed lime green = non-US aircraft (Guatemalan tails flying out of Tampico). Yellow = infested zone, blue = surveillance. Sources: Texas = TAHC; New Mexico = NM Livestock Board / NMSU map; Arizona = public Google My Map "New World Screwworm" (unofficial, no stated author). Tap or click any flight line to see its tail number and date. Small grey dots = flight start/end points. Red dots = confirmed cases (USDA), placed within the county (not exact locations); hollow red rings = fly-trap detections. Basemap switch is top-right.</div>
   <div class="hint" style="border-top:none;padding-top:4px;">Contact: William Cage - wrcage@gmail.com</div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
@@ -246,6 +249,7 @@ function classifyPhases(coords, override){
   // short out-of-band climbs to handle multi-pass missions.
   const n = coords.length;
   if(n === 0) return [];
+  const hasOverride = !!override;
   override = override || {};
   const rangeStart = (override.start != null) ? override.start : 0;
   const rangeEnd   = (override.end   != null) ? (override.end + 1) : n;
@@ -295,7 +299,95 @@ function classifyPhases(coords, override){
   for(const r of merged){
     for(let i = r[0]; i < r[1]; i++) phases[i] = 'drop';
   }
-  return phases;
+  // Hand-tuned overrides win; otherwise add the lane (grid) detector below.
+  return hasOverride ? phases : refinePhases(coords, phases);
+}
+
+// --- Grid (lane) detector (added 2026-11-13) --------------------------------
+// Drop missions fly parallel lanes joined by ~180-degree turns. Since Oct 2026
+// many grids (West TX / NM / AZ) are flown at ~10,000 ft -- the same altitude
+// as transit -- so altitude alone can't find them. This finds straight legs
+// and marks any lane / turn-back / lane pattern as drop, regardless of
+// altitude. Flights with a grid also get their long straight legs OUTSIDE the
+// grid (outbound/return legs flown at drop altitude) drawn as transit.
+const GRID_MIN_LEG_MI     = 6;    // a lane must be at least this long
+const GRID_LEG_TOL_DEG    = 15;   // max wobble from the leg's own direction
+const GRID_REVERSE_DEG    = 150;  // heading change that counts as a turn-back
+const GRID_MAX_TURN_MI    = 15;   // path length allowed between two lanes
+const GRID_MERGE_PTS      = 30;   // bridge short gaps between drop pieces
+const GRID_AIRPORT_MI     = 8;    // ignore turn-backs this close to takeoff/landing
+const GRID_CLIMB_FT       = 1500; // altitude change over 6 points that means climbing, not dropping
+const GRID_TRANSIT_LEG_MI = 20;   // straight legs this long outside a grid = transit
+const GRID_MIN_SHARE      = 0.15; // flight "has a grid" if >= this share of points are lanes
+function _mi(a,b){
+  const dx=(b[1]-a[1])*Math.cos((a[0]+b[0])*Math.PI/360)*69.17, dy=(b[0]-a[0])*69.17;
+  return Math.hypot(dx,dy);
+}
+function _hdg(a,b){
+  return (Math.atan2((b[1]-a[1])*Math.cos(a[0]*Math.PI/180), b[0]-a[0])*180/Math.PI+360)%360;
+}
+function _hdiff(x,y){ return Math.abs(((y-x)%360+540)%360-180); }
+// Returns per-point 1 = grid lane (drop), 2 = long straight non-grid leg, 0 = other
+function gridDropMask(coords){
+  const n=coords.length, mask=new Uint8Array(n);
+  if(n<10) return mask;
+  const cum=new Float64Array(n);
+  for(let i=1;i<n;i++) cum[i]=cum[i-1]+_mi(coords[i-1],coords[i]);
+  // straight legs: grow from s while the path stays on the chord direction
+  const legs=[];
+  let s=0;
+  while(s<n-1){
+    let e=s+1, best=-1;
+    while(e<n){
+      const ch=cum[e]-cum[s];
+      if(ch>1){
+        const h=_hdg(coords[s],coords[e]);
+        let k=e-1; while(k>s && cum[e]-cum[k]<0.5) k--;
+        if(_hdiff(h,_hdg(coords[k],coords[e]))>GRID_LEG_TOL_DEG) break;
+        if(_mi(coords[s],coords[e]) < 0.97*ch) break;
+        best=e;
+      }
+      e++;
+    }
+    if(best>0 && cum[best]-cum[s]>=GRID_MIN_LEG_MI){
+      legs.push({s, e:best, h:_hdg(coords[s],coords[best])});
+      s=best;
+    } else s++;
+  }
+  // pair each lane with any later leg reached within GRID_MAX_TURN_MI of path
+  // (lets a short jog leg sit between two lanes)
+  for(let i=0;i<legs.length;i++){
+    const A=legs[i];
+    for(let j=i+1;j<legs.length && cum[legs[j].s]-cum[A.e] <= GRID_MAX_TURN_MI;j++){
+      const B=legs[j];
+      if(_hdiff(A.h,B.h) < GRID_REVERSE_DEG) continue;
+      // lanes in a pair are similar length: clip a long approach/exit leg to
+      // its partner's length so a transit leg ending in a turn-back isn't drawn
+      const lenA=cum[A.e]-cum[A.s], lenB=cum[B.e]-cum[B.s];
+      let a=A.s; while(a<A.e && cum[A.e]-cum[a] > 1.2*lenB+1) a++;
+      let b=B.e; while(b>B.s && cum[b]-cum[B.s] > 1.2*lenA+1) b--;
+      for(let k=a;k<=b;k++) mask[k]=1;
+    }
+  }
+  // departure/arrival loops (near the airports, or while climbing/descending
+  // steeply) are not drops
+  const alt=k=>coords[Math.max(0,Math.min(n-1,k))][2];
+  for(let k=0;k<n;k++) if(mask[k] && (_mi(coords[0],coords[k])<GRID_AIRPORT_MI || _mi(coords[n-1],coords[k])<GRID_AIRPORT_MI
+      || (alt(k)!=null && alt(k-3)!=null && alt(k+3)!=null && Math.abs(alt(k+3)-alt(k-3))>GRID_CLIMB_FT))) mask[k]=0;
+  // bridge short gaps
+  let last=-1;
+  for(let i=0;i<n;i++) if(mask[i]){ if(last>=0 && i-last>1 && i-last<=GRID_MERGE_PTS) for(let k=last;k<i;k++) mask[k]=1; last=i; }
+  for(const L of legs) if(cum[L.e]-cum[L.s]>=GRID_TRANSIT_LEG_MI) for(let k=L.s;k<=L.e;k++) if(!mask[k]) mask[k]=2;
+  return mask;
+}
+// Lanes are always drop; if the flight has a grid, long straight legs outside
+// it are transit even at drop altitude. Flights without a grid keep the
+// altitude result unchanged (early-era straight release lines).
+function refinePhases(coords, phases){
+  const g=gridDropMask(coords); let lanes=0;
+  for(let i=0;i<g.length;i++) if(g[i]===1) lanes++;
+  const hasGrid = lanes >= GRID_MIN_SHARE*coords.length;
+  return phases.map((p,i)=> g[i]===1 ? 'drop' : (hasGrid && g[i]===2 ? 'transit' : p));
 }
 
 function buildPhaseSegments(coords, phases){
@@ -322,6 +414,50 @@ const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Wo
 const labels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',{attribution:'Labels &copy; Esri',maxZoom:19});
 
 const map = L.map('map',{preferCanvas:true,layers:[topo]}).setView([25.5,-99],6);
+
+// --- Flight line widths shrink when zoomed far out (2026-11-13) -------------
+// Full width from zoom 8 in; 80% at 7, 60% at 6, 45% at 5 and below. On a phone
+// the opening view is ~zoom 5, where full-width lines smeared together.
+const flightLines = [];            // [polyline, base weight]
+function lineScale(){ const z = map.getZoom(); return z >= 8 ? 1 : Math.max(0.45, 1 - 0.2 * (8 - z)); }
+map.on('zoomend', ()=>{ const k = lineScale(); flightLines.forEach(([pl,w])=>pl.setStyle({weight:Math.max(0.6, w*k)})); });
+
+// --- Tap/click a flight line -> tail number + date ------------------------
+// Picks the nearest VISIBLE flight within a finger-width of the tap (lines are
+// thin, so per-line hit-testing was too fussy on phones). Taps on case dots
+// and start/end markers keep their own popups.
+let lastLayerClick = 0;
+function markLayerClick(){ lastLayerClick = Date.now(); }
+const WEEKDAY = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'], MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function flightDate(day){ const d = new Date(Date.UTC(2026,4,30) + day*86400000);
+  return WEEKDAY[d.getUTCDay()]+', '+MON[d.getUTCMonth()]+' '+d.getUTCDate()+', '+d.getUTCFullYear(); }
+map.on('click', ev=>{
+  if(Date.now() - lastLayerClick < 300) return;
+  if(typeof flights === 'undefined' || !flights.length) return;
+  const touch = ev.originalEvent && (ev.originalEvent.pointerType === 'touch' || /touch/.test(ev.originalEvent.type));
+  const tol = touch || L.Browser.mobile ? 16 : 9;
+  const p = map.latLngToLayerPoint(ev.latlng);
+  let best = null, bestD = tol;
+  flights.forEach((f,i)=>{
+    if(!groups[i] || !map.hasLayer(groups[i])) return;
+    const b = f._bounds || (f._bounds = L.latLngBounds(fb[i]));
+    const sw = map.latLngToLayerPoint(b.getSouthWest()), ne = map.latLngToLayerPoint(b.getNorthEast());
+    if(p.x < sw.x - tol || p.x > ne.x + tol || p.y > sw.y + tol || p.y < ne.y - tol) return;
+    let prev = null;
+    for(const c of fb[i]){
+      const q = map.latLngToLayerPoint(c);
+      if(prev){ const d = L.LineUtil.pointToSegmentDistance(p, prev, q); if(d < bestD){ bestD = d; best = i; } }
+      prev = q;
+    }
+  });
+  if(best == null) return;
+  const f = flights[best];
+  const route = (f.name.split(' \u2014 ')[1] || f.name);
+  L.popup().setLatLng(ev.latlng)
+    .setContent('<b>'+f.ac+'</b>'+(isNonUS(f.ac)?' <span style="color:#65a30d">(non-US)</span>':'')+
+                '<br>'+flightDate(f.day)+'<br><span style="color:#4b5563">'+route+'</span>')
+    .openOn(map);
+});
 // Basemap picker: expanded by default on desktop (screen wide enough that the
 // full row of options is helpful), collapsed to a hamburger-style icon on
 // mobile (≤640px) so it doesn't crowd the map. Tap the icon to expand.
@@ -438,7 +574,8 @@ async function loadCases(){
     const layer = L.circleMarker([c.lat, c.lon], {renderer: caseRenderer, pane:'casePane'})
       .bindPopup('<b>' + what + '</b><br>' + where + '<br>Confirmed ' + fmtDate(c.date) +
                  '<br>USDA status today: ' + (c.status || '?') +
-                 '<br><i style="color:#6b7280">Dot placed within the county; not the exact location.</i>');
+                 '<br><i style="color:#6b7280">Dot placed within the county; not the exact location.</i>')
+      .on('click', markLayerClick);
     return Object.assign({}, c, {layer});
   });
   lastCaseDay = null;
@@ -717,8 +854,10 @@ function wireHold(btn, d){
 // ▶ Play: step one day at a time (like the earthquake-history animations).
 // From the last day it restarts at the beginning. Any manual move stops it.
 const playBtn = document.getElementById('t-play');
-const PLAY_MS = 350;
-let playT = null;
+const PLAY_MS = 350;               // 1x: one day per 350 ms
+const SPEEDS = [1, 2, 3];
+let speedIx = 0, playT = null;
+const speedBtn = document.getElementById('t-speed');
 function stopPlay(){
   if(playT){ clearInterval(playT); playT = null; }
   playBtn.classList.remove('playing'); playBtn.innerHTML = '&#9654;';
@@ -731,8 +870,14 @@ function startPlay(){
   }
   playBtn.classList.add('playing'); playBtn.innerHTML = '&#10074;&#10074;';
   playBtn.setAttribute('aria-label','Pause');
-  playT = setInterval(()=>{ if(!stepDay(+1)) stopPlay(); }, PLAY_MS);
+  playT = setInterval(()=>{ if(!stepDay(+1)) stopPlay(); }, PLAY_MS / SPEEDS[speedIx]);
 }
+speedBtn.addEventListener('click', ()=>{
+  speedIx = (speedIx + 1) % SPEEDS.length;
+  speedBtn.innerHTML = SPEEDS[speedIx] + '&times;';
+  speedBtn.classList.toggle('active', speedIx > 0);
+  if(playT){ clearInterval(playT); playT = setInterval(()=>{ if(!stepDay(+1)) stopPlay(); }, PLAY_MS / SPEEDS[speedIx]); }
+});
 playBtn.addEventListener('click', ()=>{ playT ? stopPlay() : startPlay(); });
 slider.addEventListener('input', stopPlay);
 [prevBtn, nextBtn].forEach(b=>b.addEventListener('pointerdown', stopPlay));
@@ -803,28 +948,33 @@ legend.insertAdjacentHTML('beforeend','<div class="achdr">Confirmed cases (USDA)
 // segments so cruise legs can be faded relative to drop legs. Always built;
 // per-flight visibility is handled by updateVis(); start/end markers anchor
 // the actual departure and arrival points of the full flight.
+const lineW = w => Math.max(0.6, w * lineScale());
 flights.forEach((f,i)=>{
   const ll = f.coords.map(c => [c[0], c[1]]);
   const g  = L.layerGroup();
   const phases = classifyPhases(f.coords, f.dropOverride);
   const segs   = buildPhaseSegments(f.coords, phases);
+  const add = (coords, opt, base) => {
+    const pl = L.polyline(coords, Object.assign({interactive:false, weight:lineW(base)}, opt)).addTo(g);
+    flightLines.push([pl, base]);
+  };
   segs.forEach(seg => {
     if(seg.phase === 'drop'){
       // Drop legs: full halo + bold colored line — these are the work
-      L.polyline(seg.coords, {color:'#fff', weight:5, opacity:0.5}).addTo(g);
-      L.polyline(seg.coords, {color:f.color, weight:DROP_WEIGHT, opacity:DROP_OPACITY,
-                              dashArray: isNonUS(f.ac) ? DASH_DROP : null}).addTo(g);
+      add(seg.coords, {color:'#fff', opacity:0.5}, 5);
+      add(seg.coords, {color:f.color, opacity:DROP_OPACITY,
+                       dashArray: isNonUS(f.ac) ? DASH_DROP : null}, DROP_WEIGHT);
     } else {
       // Transit legs: thinner, faded, no halo — visible but de-emphasized
-      L.polyline(seg.coords, {color:f.color, weight:TRANSIT_WEIGHT, opacity:TRANSIT_OPACITY,
-                              dashArray: isNonUS(f.ac) ? DASH_TRANSIT : null}).addTo(g);
+      add(seg.coords, {color:f.color, opacity:TRANSIT_OPACITY,
+                       dashArray: isNonUS(f.ac) ? DASH_TRANSIT : null}, TRANSIT_WEIGHT);
     }
   });
   const s = f.coords[0], e = f.coords[f.coords.length - 1];
   L.circleMarker([s[0],s[1]],{radius:2.5,color:'#4b5563',weight:1,fillColor:'#9ca3af',fillOpacity:1})
-    .bindPopup('<b>'+f.ac+' &middot; '+f.name+'</b><br>Start '+s[0].toFixed(4)+', '+s[1].toFixed(4)).addTo(g);
+    .bindPopup('<b>'+f.ac+' &middot; '+f.name+'</b><br>Start '+s[0].toFixed(4)+', '+s[1].toFixed(4)).on('click', markLayerClick).addTo(g);
   L.circleMarker([e[0],e[1]],{radius:2.5,color:'#4b5563',weight:1,fillColor:'#9ca3af',fillOpacity:1})
-    .bindPopup('<b>'+f.ac+' &middot; '+f.name+'</b><br>End '+e[0].toFixed(4)+', '+e[1].toFixed(4)).addTo(g);
+    .bindPopup('<b>'+f.ac+' &middot; '+f.name+'</b><br>End '+e[0].toFixed(4)+', '+e[1].toFixed(4)).on('click', markLayerClick).addTo(g);
   g.addTo(map);
   groups[i] = g; fb[i] = ll; ll.forEach(p => all.push(p));
 });
@@ -1010,15 +1160,17 @@ if(window.matchMedia('(max-width:640px)').matches){
 <script>
 // --- Support this map -------------------------------------------------------
 // Card with Venmo amount buttons (+ optional Zelle). Opens from the heart
-// button / legend link, and ONCE automatically after 3 minutes of visible time
-// on the page. Closing it suppresses the auto-show for 30 days; tapping an
-// amount suppresses it for 180 days. Browser storage can be unavailable
+// button / legend link, and automatically on every other visit after 2 minutes
+// of visible time (see below); tapping an amount or Zelle Copy suppresses it
+// for 180 days. Browser storage can be unavailable
 // (private mode etc.), so every access is wrapped; worst case it shows again.
 (function(){
   const VENMO_USER = 'William-Cage';
   const ZELLE_ID   = 'wrcage@gmail.com';   // Zelle email; '' hides the line (never use the phone number)
   const NOTE       = 'Screwworm map support';
-  const AUTO_MS    = 3 * 60 * 1000;
+  const AUTO_MS    = 2 * 60 * 1000;   // visible time before the nudge
+  const IDLE_MS    = 1500;            // ...and this long without a tap/scroll
+  const VISIT_GAP  = 30 * 60 * 1000;  // back after 30+ min away = a new visit
   const DAY        = 86400000;
   const overlay = document.getElementById('support-overlay');
   const store = {
@@ -1086,11 +1238,19 @@ if(window.matchMedia('(max-width:640px)').matches){
     return b; } });
   new Btn().addTo(map);
 
-  // One-time nudge after 3 minutes of visible time.
-  const quiet = Date.now() - store.get('supportDismissedAt') < 30*DAY ||
-                Date.now() - store.get('supportDonatedAt')   < 180*DAY;
+  // Nudge on every other visit (1st, 3rd, 5th...) after 2 minutes of visible
+  // time. A reload or coming back within 30 min is the same visit. Anyone who
+  // tapped a pay button is left alone for 180 days.
+  const nowMs = Date.now();
+  let visit = store.get('supportVisits');
+  if(nowMs - store.get('supportLastSeen') > VISIT_GAP){ visit += 1; store.set('supportVisits', visit); }
+  store.set('supportLastSeen', nowMs);
+  setInterval(()=>{ if(document.visibilityState === 'visible') store.set('supportLastSeen', Date.now()); }, 60000);
+  const quiet = visit % 2 === 0 ||
+                store.get('supportShownVisit') === visit ||
+                nowMs - store.get('supportDonatedAt') < 180*DAY;
   if(!quiet){
-    // Don't pop up mid-gesture: wait until the visitor has been idle 5 s.
+    // Don't pop up mid-gesture: wait until the visitor has been idle briefly.
     let lastInput = 0;
     ['pointerdown','pointermove','touchstart','wheel','keydown','input'].forEach(e =>
       document.addEventListener(e, ()=>{ lastInput = Date.now(); }, {passive:true, capture:true}));
@@ -1099,11 +1259,11 @@ if(window.matchMedia('(max-width:640px)').matches){
       const now = Date.now();
       if(document.visibilityState === 'visible') visibleMs += now - last;
       last = now;
-      if(visibleMs >= AUTO_MS && now - lastInput >= 5000){
+      if(visibleMs >= AUTO_MS && now - lastInput >= IDLE_MS){
         clearInterval(tick);
-        if(!overlay.classList.contains('open')){ openSupport('auto'); store.set('supportDismissedAt', Date.now()); }
+        if(!overlay.classList.contains('open')){ openSupport('auto'); store.set('supportShownVisit', visit); }
       }
-    }, 1000);
+    }, 250);
   }
 })();
 </script>
