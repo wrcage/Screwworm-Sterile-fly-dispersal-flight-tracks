@@ -385,14 +385,22 @@ function refinePhases(coords, phases){
   return phases.map((p,i)=> g[i]===1 ? 'drop' : p);
 }
 
-function buildPhaseSegments(coords, phases){
+function buildPhaseSegments(coords, phases, gaps){
   // Group contiguous same-phase points into segments. Each boundary point is
   // included in BOTH neighboring segments so the polylines visually touch
-  // (no gaps where phase changes).
+  // (no gaps where phase changes). `gaps` (optional, from KML imports) lists
+  // indices i where the receiver lost the plane between i-1 and i: no line is
+  // drawn across those holes.
   const segs = [];
   if(coords.length === 0) return segs;
+  const gapSet = new Set(gaps || []);
   let runStart = 0;
   for(let i = 1; i < coords.length; i++){
+    if(gapSet.has(i)){
+      if(i - runStart >= 2) segs.push({ phase: phases[runStart], coords: coords.slice(runStart, i).map(c => [c[0], c[1]]) });
+      runStart = i;
+      continue;
+    }
     if(phases[i] !== phases[runStart]){
       // End of a run — include the transition point in this segment too
       segs.push({ phase: phases[runStart], coords: coords.slice(runStart, i + 1).map(c => [c[0], c[1]]) });
@@ -439,11 +447,12 @@ map.on('click', ev=>{
     const sw = map.latLngToLayerPoint(b.getSouthWest()), ne = map.latLngToLayerPoint(b.getNorthEast());
     if(p.x < sw.x - tol || p.x > ne.x + tol || p.y > sw.y + tol || p.y < ne.y - tol) return;
     let prev = null;
-    for(const c of fb[i]){
+    const gapSet = f.gaps ? new Set(f.gaps) : null;
+    fb[i].forEach((c, k)=>{
       const q = map.latLngToLayerPoint(c);
-      if(prev){ const d = L.LineUtil.pointToSegmentDistance(p, prev, q); if(d < bestD){ bestD = d; best = i; } }
+      if(prev && !(gapSet && gapSet.has(k))){ const d = L.LineUtil.pointToSegmentDistance(p, prev, q); if(d < bestD){ bestD = d; best = i; } }
       prev = q;
-    }
+    });
   });
   if(best == null) return;
   const f = flights[best];
@@ -617,7 +626,12 @@ function rebuildHeat(){
     const phases = classifyPhases(f.coords, f.dropOverride, GRID_FIX.has(f.fr24_id));
     // Walk the coords and emit one polyline per contiguous drop run.
     let seg = null;
+    const gapSet = new Set(f.gaps || []);
     for(let i = 0; i < f.coords.length; i++){
+      if(seg && gapSet.has(i)){                   // receiver coverage hole
+        if(seg.length >= 2) L.polyline(seg, style).addTo(heatLayer);
+        seg = null;
+      }
       if(phases[i] === 'drop'){
         if(!seg) seg = [];
         seg.push([f.coords[i][0], f.coords[i][1]]);
@@ -948,7 +962,7 @@ flights.forEach((f,i)=>{
   const ll = f.coords.map(c => [c[0], c[1]]);
   const g  = L.layerGroup();
   const phases = classifyPhases(f.coords, f.dropOverride, GRID_FIX.has(f.fr24_id));
-  const segs   = buildPhaseSegments(f.coords, phases);
+  const segs   = buildPhaseSegments(f.coords, phases, f.gaps);
   const add = (coords, opt, base) => {
     const pl = L.polyline(coords, Object.assign({interactive:false, weight:lineW(base)}, opt)).addTo(g);
     flightLines.push([pl, base]);

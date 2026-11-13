@@ -88,7 +88,9 @@ TAILS = [
     "N37H", "N62V", "N67K", "N72L", "N75G", "N75V",
     "N90D", "N92B", "N96S", "N97D", "TGJAC", "TGJAK",
     "N75Z",    # added 2026-11-12: Dynamic Aviation King Air, Hermosillo ops (found by discover_aircraft.py)
-    "N72J", "N7199D",   # added 2026-11-13: maintainer reports both now flying drops
+    "N72J", "N7199D",   # added 2026-11-13: maintainer reports both now flying drops.
+    # N72J is BLOCKED on FR24 (shows as an anonymous BE9L), so FR24 returns
+    # nothing for it; its flights come from ADS-B Exchange KMLs via import_kml.py.
     # XC-ROK was added and removed 2026-11-12: it belongs to the Servicio
     # Geologico Mexicano (aerial geophysical survey grids) and never flew US
     # work, so it isn't part of the dispersal picture this map is for.
