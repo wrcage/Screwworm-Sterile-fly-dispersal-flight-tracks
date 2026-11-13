@@ -107,6 +107,27 @@ def inspect(regs, days):
     return 0
 
 
+def find_at(airport, types, days):
+    """Every flight of the given type(s) touching an airport (blocked tails
+    show up here with a blank/odd reg but a hex code)."""
+    rows = summary({"airports": airport, "aircraft": types}, days)
+    lines = ["## %s flights at %s (last %d days)" % (types, airport, days), "",
+             "| takeoff UTC | reg | callsign | type | hex | route | hours |", "|---|---|---|---|---|---|---|"]
+    for f in sorted(rows, key=lambda r: r.get("datetime_takeoff") or ""):
+        h = hours(f)
+        lines.append("| %s | %s | %s | %s | %s | %s→%s | %s |" % (
+            (f.get("datetime_takeoff") or "")[:16], f.get("reg"), f.get("callsign"), f.get("type"),
+            f.get("hex"), f.get("orig_icao") or "?", f.get("dest_icao") or "?",
+            "%.1f" % h if h is not None else "?"))
+    text = "\n".join(lines)
+    print("\n" + text)
+    sp = os.environ.get("GITHUB_STEP_SUMMARY")
+    if sp:
+        with open(sp, "a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    return 0
+
+
 def find(ids, days):
     """Look an aircraft up by callsign AND by registration (4 credits/result)
     and list what FR24 has: reg, callsign, type, route, hours."""
@@ -150,6 +171,9 @@ def main():
                     help="Comma-separated registrations: fetch tracks (40 credits each) "
                          "of their >=3.5 h flights and report whether they fly a grid.")
     args = ap.parse_args()
+    if args.find.startswith("airport:"):        # airport:KEBG:BE9L
+        _, apt, typ = args.find.split(":")
+        return find_at(apt, typ, args.days)
     if args.find:
         return find(args.find.split(","), args.days)
     if args.inspect:
