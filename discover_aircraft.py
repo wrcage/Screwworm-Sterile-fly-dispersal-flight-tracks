@@ -171,6 +171,17 @@ def main():
                     help="Comma-separated registrations: fetch tracks (40 credits each) "
                          "of their >=3.5 h flights and report whether they fly a grid.")
     args = ap.parse_args()
+    if args.find.startswith("window:"):         # window:BE9L,U21:2026-11-13T12:15:2026-11-13T12:40
+        _, typ, rest = args.find.split(":", 2)
+        a, b = rest[:16], rest[17:]
+        st = dt.datetime.strptime(a, "%Y-%m-%dT%H:%M"); en = dt.datetime.strptime(b, "%Y-%m-%dT%H:%M")
+        rows = uf.summary_window({"aircraft": typ}, st, en)
+        print("## %s took off %s..%s UTC: %d" % (typ, a, b, len(rows)))
+        for f in sorted(rows, key=lambda r: r.get("datetime_takeoff") or ""):
+            print("| %s | reg=%s | cs=%s | %s | hex=%s | %s->%s | landed %s |" % (
+                f.get("datetime_takeoff"), f.get("reg"), f.get("callsign"), f.get("type"), f.get("hex"),
+                f.get("orig_icao"), f.get("dest_icao"), f.get("datetime_landed")))
+        return 0
     if args.find.startswith("airport:"):        # airport:KEBG:BE9L
         _, apt, typ = args.find.split(":")
         return find_at(apt, typ, args.days)
