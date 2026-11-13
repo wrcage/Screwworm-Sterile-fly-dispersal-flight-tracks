@@ -1,1 +1,1 @@
-{"date_from": "2026-10-14", "date_to": "2026-11-12", "tails": ["N75Z", "XCROK", "TGJAC", "TGJAK"], "reason": "new tails found by discover_aircraft.py; check TG- tails with hyphenated registrations"}
+{"date_from": "2026-10-15", "date_to": "2026-11-13", "tails": ["N72J", "N7199D"], "reason": "2026-11-13: new tails N72J and N7199D reported flying drops; backfill FR24 30-day window"}

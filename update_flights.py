@@ -88,6 +88,7 @@ TAILS = [
     "N37H", "N62V", "N67K", "N72L", "N75G", "N75V",
     "N90D", "N92B", "N96S", "N97D", "TGJAC", "TGJAK",
     "N75Z",    # added 2026-11-12: Dynamic Aviation King Air, Hermosillo ops (found by discover_aircraft.py)
+    "N72J", "N7199D",   # added 2026-11-13: maintainer reports both now flying drops
     # XC-ROK was added and removed 2026-11-12: it belongs to the Servicio
     # Geologico Mexicano (aerial geophysical survey grids) and never flew US
     # work, so it isn't part of the dispersal picture this map is for.
@@ -117,6 +118,8 @@ TAIL_COLORS = {
     "N92B":  "#7c3aed",
     "N96S":  "#6b7280",  # new tail, grey until further notice
     "N75Z":  "#6b7280",
+    "N72J":  "#6b7280",
+    "N7199D": "#6b7280",
     "N97D":  "#0d9488",
     "TGJAC": "#84cc16",   # lime; drawn dashed (non-US)
     "TGJAK": "#84cc16",   # lime; drawn dashed (non-US)
