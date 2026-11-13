@@ -234,7 +234,7 @@ const TRANSIT_WEIGHT  = 2;
 const DROP_OPACITY    = 0.95;
 const DROP_WEIGHT     = 3;
 
-function classifyPhases(coords, override){
+function classifyPhases(coords, override, useGrid){
   // Returns an array of 'drop' | 'transit' strings, one per coord point.
   // Algorithm (modal-band + merge) with optional per-flight override:
   //   override.band:  [min, max] — custom altitude band (skips auto-detection)
@@ -299,17 +299,19 @@ function classifyPhases(coords, override){
   for(const r of merged){
     for(let i = r[0]; i < r[1]; i++) phases[i] = 'drop';
   }
-  // Hand-tuned overrides win; otherwise add the lane (grid) detector below.
-  return hasOverride ? phases : refinePhases(coords, phases);
+  // Only flights on the GRID_FIX list (below) get the lane detector.
+  return (useGrid && !hasOverride) ? refinePhases(coords, phases) : phases;
 }
 
 // --- Grid (lane) detector (added 2026-11-13) --------------------------------
-// Drop missions fly parallel lanes joined by ~180-degree turns. Since Oct 2026
-// many grids (West TX / NM / AZ) are flown at ~10,000 ft -- the same altitude
-// as transit -- so altitude alone can't find them. This finds straight legs
-// and marks any lane / turn-back / lane pattern as drop, regardless of
-// altitude. Flights with a grid also get their long straight legs OUTSIDE the
-// grid (outbound/return legs flown at drop altitude) drawn as transit.
+// Some missions (mostly West TX / NM since Oct 2026) fly their lanes at
+// ~10,000 ft, above the altitude classifier's window, so they rendered dimmed.
+// For the flights William listed (GRID_FIX, by FR24 id) straight lanes joined
+// by ~180-degree turn-backs are ADDED as drop. It never dims anything.
+// NOT applied to all flights: a single straight leg that looks like transit is
+// often one lane of a grid filled in across several days (e.g. along the Rio
+// Grande), which only shows when flights are viewed together.
+const GRID_FIX = new Set(["4269bb43", "424bf476", "4221e6dc", "42834655", "42454a91", "42663dcc", "423d863a", "42225008", "421682f5", "42078278", "41fbf90f", "40b1e567", "40a4d858", "41b85a9e", "42871002", "4278b6d5", "42669730", "4239001e", "424c1516", "41fb0d48", "41f3ab23", "41efc51d"]);
 const GRID_MIN_LEG_MI     = 6;    // a lane must be at least this long
 const GRID_LEG_TOL_DEG    = 15;   // max wobble from the leg's own direction
 const GRID_REVERSE_DEG    = 150;  // heading change that counts as a turn-back
@@ -317,8 +319,6 @@ const GRID_MAX_TURN_MI    = 15;   // path length allowed between two lanes
 const GRID_MERGE_PTS      = 30;   // bridge short gaps between drop pieces
 const GRID_AIRPORT_MI     = 8;    // ignore turn-backs this close to takeoff/landing
 const GRID_CLIMB_FT       = 1500; // altitude change over 6 points that means climbing, not dropping
-const GRID_TRANSIT_LEG_MI = 20;   // straight legs this long outside a grid = transit
-const GRID_MIN_SHARE      = 0.15; // flight "has a grid" if >= this share of points are lanes
 function _mi(a,b){
   const dx=(b[1]-a[1])*Math.cos((a[0]+b[0])*Math.PI/360)*69.17, dy=(b[0]-a[0])*69.17;
   return Math.hypot(dx,dy);
@@ -327,7 +327,7 @@ function _hdg(a,b){
   return (Math.atan2((b[1]-a[1])*Math.cos(a[0]*Math.PI/180), b[0]-a[0])*180/Math.PI+360)%360;
 }
 function _hdiff(x,y){ return Math.abs(((y-x)%360+540)%360-180); }
-// Returns per-point 1 = grid lane (drop), 2 = long straight non-grid leg, 0 = other
+// Returns per-point 1 = grid lane (drop), 0 = other
 function gridDropMask(coords){
   const n=coords.length, mask=new Uint8Array(n);
   if(n<10) return mask;
@@ -377,17 +377,12 @@ function gridDropMask(coords){
   // bridge short gaps
   let last=-1;
   for(let i=0;i<n;i++) if(mask[i]){ if(last>=0 && i-last>1 && i-last<=GRID_MERGE_PTS) for(let k=last;k<i;k++) mask[k]=1; last=i; }
-  for(const L of legs) if(cum[L.e]-cum[L.s]>=GRID_TRANSIT_LEG_MI) for(let k=L.s;k<=L.e;k++) if(!mask[k]) mask[k]=2;
   return mask;
 }
-// Lanes are always drop; if the flight has a grid, long straight legs outside
-// it are transit even at drop altitude. Flights without a grid keep the
-// altitude result unchanged (early-era straight release lines).
+// Additive only: lane points become drop; everything else keeps the altitude result.
 function refinePhases(coords, phases){
-  const g=gridDropMask(coords); let lanes=0;
-  for(let i=0;i<g.length;i++) if(g[i]===1) lanes++;
-  const hasGrid = lanes >= GRID_MIN_SHARE*coords.length;
-  return phases.map((p,i)=> g[i]===1 ? 'drop' : (hasGrid && g[i]===2 ? 'transit' : p));
+  const g=gridDropMask(coords);
+  return phases.map((p,i)=> g[i]===1 ? 'drop' : p);
 }
 
 function buildPhaseSegments(coords, phases){
@@ -619,7 +614,7 @@ function rebuildHeat(){
   flights.forEach(f=>{
     const inWindow = f.day <= currentDay && f.day >= winStart;
     if(!inWindow) return;
-    const phases = classifyPhases(f.coords, f.dropOverride);
+    const phases = classifyPhases(f.coords, f.dropOverride, GRID_FIX.has(f.fr24_id));
     // Walk the coords and emit one polyline per contiguous drop run.
     let seg = null;
     for(let i = 0; i < f.coords.length; i++){
@@ -952,7 +947,7 @@ const lineW = w => Math.max(0.6, w * lineScale());
 flights.forEach((f,i)=>{
   const ll = f.coords.map(c => [c[0], c[1]]);
   const g  = L.layerGroup();
-  const phases = classifyPhases(f.coords, f.dropOverride);
+  const phases = classifyPhases(f.coords, f.dropOverride, GRID_FIX.has(f.fr24_id));
   const segs   = buildPhaseSegments(f.coords, phases);
   const add = (coords, opt, base) => {
     const pl = L.polyline(coords, Object.assign({interactive:false, weight:lineW(base)}, opt)).addTo(g);
