@@ -783,12 +783,16 @@ function updateVis(){
 // If flights loaded, the biggest day index in the JSON is the latest day.
 // If they failed to load (fetch error), fall back to today's UTC day index
 // so the slider still shows a sensible range and zones can still render.
+// The slider always reaches TODAY (viewer's local date), even before today's
+// flights are fetched — zones and cases are often dated today, and capping the
+// slider at the last flight day hid them (Nov 19, 2026 fix).
 let maxDay = 0;
-if(flights.length){
-  flights.forEach(f => { if(f.day > maxDay) maxDay = f.day; });
-} else {
+flights.forEach(f => { if(f.day > maxDay) maxDay = f.day; });
+{
+  const now = new Date();
+  const todayMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
   const zeroMs = Date.UTC(DAY_ZERO_YEAR, DAY_ZERO_MONTH, DAY_ZERO_DATE);
-  maxDay = Math.max(0, Math.floor((Date.now() - zeroMs) / 86400000));
+  maxDay = Math.max(maxDay, Math.floor((todayMs - zeroMs) / 86400000));
 }
 rebuildDayLabels(maxDay);
 currentDay = maxDay;
