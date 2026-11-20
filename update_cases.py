@@ -266,10 +266,16 @@ def county_samples(geom):
 
 
 def pick_zone(day, overlaps):
-    """overlaps: list of (zone, points-in-zone-and-county)."""
+    """overlaps: list of (zone, pts in zone AND county, NEW pts -- the part of
+    the county this zone added that no infested zone covered the day before)."""
     def active(z, d):
         return z["from"] <= d and (z["to"] is None or z["to"] >= d)
     near = [o for o in overlaps if day - ZONE_MATCH_BEFORE <= o[0]["from"] <= day + ZONE_MATCH_AFTER]
+    grew = [o for o in near if len(o[2]) >= 3]
+    if grew:
+        # the zone that added the most new ground in this county, discounted
+        # a little per day away from the case date
+        return max(grew, key=lambda o: len(o[2]) / (1 + 0.25 * abs(o[0]["from"] - day)))
     if near:
         return min(near, key=lambda o: (abs(o[0]["from"] - day), -len(o[1])))
     act = [o for o in overlaps if active(o[0], day)]
@@ -322,13 +328,21 @@ def place(rows, fallback=None):
                     continue
                 pts = [p for p in samples if inside(p[0], p[1], z["geom"])]
                 if len(pts) >= 3:
-                    ov.append((z, pts))
+                    ov.append([z, pts])
+            for o in ov:                     # new ground each zone added in this county
+                prior = [q[0]["geom"] for q in ov if q[0] is not o[0]
+                         and q[0]["from"] <= o[0]["from"] - 1
+                         and (q[0]["to"] is None or q[0]["to"] >= o[0]["from"] - 1)]
+                o.append([p for p in o[1] if not any(inside(p[0], p[1], g) for g in prior)])
             cache[ck] = (samples, ov)
         samples, ov = cache[ck]
         o = pick_zone(r["day"], ov)
         if o:
-            zone, pts = o
-            gk = (ck, zone["id"])
+            zone, pts, newpts = o
+            near_case = r["day"] - ZONE_MATCH_BEFORE <= zone["from"] <= r["day"] + ZONE_MATCH_AFTER
+            if near_case and len(newpts) >= 3:
+                pts = newpts                 # center of the ground the new zone added
+            gk = (ck, zone["id"], len(pts))
             ok = lambda x, y, zg=zone["geom"]: inside(x, y, geom) and inside(x, y, zg)
         else:
             pts = samples or [center(geom)]

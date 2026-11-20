@@ -404,15 +404,19 @@ def fetch_az_zones():
         root = ET.fromstring(resp.read())
     out = {}
     for folder in root.iter(_KML_NS + "Folder"):
+        # The map's author reorganizes folders (Nov 20, 2026: AZ surveillance moved
+        # into a combined "Surveillance Zones" folder), so decide state and kind
+        # from the folder name OR the placemark's own name.
         fname = (folder.findtext(_KML_NS + "name") or "").strip()
-        if "arizona" not in fname.lower():
-            continue
-        kind = ZONE_NAME_SURVEILLANCE if "surveil" in fname.lower() else ZONE_NAME_INFESTED
-        for pm in folder.iter(_KML_NS + "Placemark"):
+        for pm in folder.findall(_KML_NS + "Placemark"):
+            name = (pm.findtext(_KML_NS + "name") or "zone").strip()
+            label = (fname + " " + name).lower()
+            if "arizona" not in label:
+                continue
+            kind = ZONE_NAME_SURVEILLANCE if "surveil" in label else ZONE_NAME_INFESTED
             polys = _kml_polygons(pm)
             if not polys:
                 continue
-            name = (pm.findtext(_KML_NS + "name") or "zone").strip()
             pts = [p for poly in polys for p in poly[0]]
             clon = sum(p[0] for p in pts) / len(pts)
             clat = sum(p[1] for p in pts) / len(pts)
