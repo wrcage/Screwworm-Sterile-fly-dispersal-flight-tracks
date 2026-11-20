@@ -43,6 +43,8 @@ APHIS_PAGE = ("https://www.aphis.usda.gov/animals/animal-health/livestock-and-po
 FALLBACK_VIEW = ("https://publicdashboards.dl.usda.gov/t/MRP_PUB/views/"
                  "NewWorldScrewwormPublicReporting_17805168329840/SummaryDashboard")
 SHEET = "ExportToCSV"
+NOTE = ("Positions are approximate: placed inside the reported county, within the infested zone "
+        "drawn for it when there is one; not the premises.")
 MAP_SHEET = "New State Map No Dependencies"
 OUT = "cases.json"
 COUNTY_FILES = {"Texas": "counties-tx.geojson", "New Mexico": "counties-nm-az.geojson",
@@ -165,9 +167,9 @@ def center(geom):
     return pts[len(pts) // 2] if pts else (sum(xs) / len(xs), sum(ys) / len(ys))
 
 
-def spiral_point(c, k):
+def spiral_point(c, k, step=SPIRAL_STEP_DEG):
     """k-th point of a sunflower (Vogel) spiral around center c=(lon,lat)."""
-    r = SPIRAL_STEP_DEG * math.sqrt(k)
+    r = step * math.sqrt(k)
     t = k * math.radians(137.508)
     return (c[0] + r * math.cos(t) / math.cos(math.radians(c[1])), c[1] + r * math.sin(t))
 
@@ -205,8 +207,94 @@ def build(tables):
                 float(m["Longitude (generated)"][i]), float(m["Latitude (generated)"][i]))
         except Exception:
             pass
-    counties = load_counties()
     rows.sort(key=lambda r: (r["date"], r["_key"]))
+    unmatched = place(rows, fallback)
+    for r in rows:
+        r.pop("_key", None)
+    if unmatched:
+        log("WARNING: counties not in county files (USDA centroid used): " + "; ".join(sorted(unmatched)))
+    return [r for r in rows if r["lon"] is not None]
+
+
+# --- placement inside infested zones --------------------------------------------
+#
+# USDA gives only the county. To keep dots honest and readable, each case is put
+# inside the INFESTED ZONE that covers its county:
+#   1. a zone (new or reshaped) that appeared in that county around the case
+#      date (ZONE_MATCH_BEFORE days before .. ZONE_MATCH_AFTER days after) --
+#      TAHC/NM/AZ draw a zone right after a confirmed case, so that polygon is
+#      where the case is;
+#   2. else the zone in force in that county on the case date;
+#   3. else the next zone drawn there later, else the last one before;
+#   4. else (no infested zone has ever touched the county) the county itself.
+# The dot goes at the center of (zone AND county); more cases in the same zone
+# spiral out from there and never leave it. Placement is recomputed on every
+# run, so a dot moves into its zone once the zone is published.
+
+ZONES_FILE = "zones-timeline.json"
+ZONE_MATCH_BEFORE = 3
+ZONE_MATCH_AFTER = 21
+GRID_N = 60                    # sample grid per county for zone/county overlap
+
+
+def bbox(geom):
+    xs = [p[0] for poly in polys(geom) for ring in poly for p in ring]
+    ys = [p[1] for poly in polys(geom) for ring in poly for p in ring]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def load_infested():
+    try:
+        t = json.load(open(ZONES_FILE, encoding="utf-8"))
+    except Exception as e:
+        log("WARNING: %s unreadable (%s); placing by county only" % (ZONES_FILE, e))
+        return []
+    out = []
+    for i, z in enumerate(t.get("zones", [])):
+        if z.get("kind") != "infested" or not z.get("geometry"):
+            continue
+        out.append({"id": "%s@%s#%d" % (z.get("gid"), z.get("from"), i), "from": z["from"],
+                    "to": z.get("to"), "geom": z["geometry"], "bb": bbox(z["geometry"])})
+    return out
+
+
+def county_samples(geom):
+    x0, y0, x1, y1 = bbox(geom)
+    pts = [(x0 + (x1 - x0) * (i + 0.5) / GRID_N, y0 + (y1 - y0) * (j + 0.5) / GRID_N)
+           for i in range(GRID_N) for j in range(GRID_N)]
+    return [p for p in pts if inside(p[0], p[1], geom)]
+
+
+def pick_zone(day, overlaps):
+    """overlaps: list of (zone, points-in-zone-and-county)."""
+    def active(z, d):
+        return z["from"] <= d and (z["to"] is None or z["to"] >= d)
+    near = [o for o in overlaps if day - ZONE_MATCH_BEFORE <= o[0]["from"] <= day + ZONE_MATCH_AFTER]
+    if near:
+        return min(near, key=lambda o: (abs(o[0]["from"] - day), -len(o[1])))
+    act = [o for o in overlaps if active(o[0], day)]
+    if act:
+        return max(act, key=lambda o: (o[0]["from"], len(o[1])))
+    later = [o for o in overlaps if o[0]["from"] > day]
+    if later:
+        return min(later, key=lambda o: o[0]["from"])
+    if overlaps:
+        return max(overlaps, key=lambda o: (o[0]["to"] or 10**6))
+    return None
+
+
+def region_center(pts):
+    mx = sum(p[0] for p in pts) / len(pts)
+    my = sum(p[1] for p in pts) / len(pts)
+    return min(pts, key=lambda p: (p[0] - mx) ** 2 + (p[1] - my) ** 2)
+
+
+def place(rows, fallback=None):
+    """Set lon/lat on each row (rows already in stable date order)."""
+    fallback = fallback or {}
+    counties = load_counties()
+    zones = load_infested()
+    cache = {}
     next_k = {}
     unmatched = set()
     for r in rows:
@@ -216,35 +304,79 @@ def build(tables):
             unmatched.add("%s, %s" % (r["county"], r["state"]))
             c = fallback.get(ck)
             if c is None:
-                r["lon"] = r["lat"] = None
+                if r.get("lon") is None:
+                    r["lon"] = r["lat"] = None
                 continue
             k = next_k.get(ck, 0)
             p = spiral_point(c, k)
             next_k[ck] = k + 1
+            r["lon"], r["lat"] = round(p[0], 4), round(p[1], 4)
+            continue
+        if ck not in cache:
+            samples = county_samples(geom)
+            cx0, cy0, cx1, cy1 = bbox(geom)
+            ov = []
+            for z in zones:
+                zx0, zy0, zx1, zy1 = z["bb"]
+                if zx1 < cx0 or zx0 > cx1 or zy1 < cy0 or zy0 > cy1:
+                    continue
+                pts = [p for p in samples if inside(p[0], p[1], z["geom"])]
+                if len(pts) >= 3:
+                    ov.append((z, pts))
+            cache[ck] = (samples, ov)
+        samples, ov = cache[ck]
+        o = pick_zone(r["day"], ov)
+        if o:
+            zone, pts = o
+            gk = (ck, zone["id"])
+            ok = lambda x, y, zg=zone["geom"]: inside(x, y, geom) and inside(x, y, zg)
         else:
-            if ck not in next_k:
-                next_k[ck] = 0
-            c = counties.setdefault(("_c",) + ck, center(geom))
-            k = next_k[ck]
-            for _ in range(500):
-                p = spiral_point(c, k)
-                k += 1
-                if inside(p[0], p[1], geom):
-                    break
-            next_k[ck] = k
+            pts = samples or [center(geom)]
+            gk = (ck, None)
+            ok = lambda x, y: inside(x, y, geom)
+        if gk not in next_k:
+            next_k[gk] = 0
+        c = cache.setdefault(("_c",) + gk, region_center(pts))
+        # spiral step scales with the region so small zones still fit their dots
+        step = max(0.01, min(SPIRAL_STEP_DEG, (len(pts) / max(len(samples), 1)) ** 0.5 * SPIRAL_STEP_DEG))
+        k = next_k[gk]
+        p = None
+        for _ in range(400):
+            q = spiral_point(c, k, step)
+            k += 1
+            if ok(q[0], q[1]):
+                p = q
+                break
+        if p is None:                       # region too small: reuse sample points
+            p = pts[k % len(pts)]
+        next_k[gk] = k
         r["lon"], r["lat"] = round(p[0], 4), round(p[1], 4)
-    for r in rows:
-        r.pop("_key", None)
-    if unmatched:
-        log("WARNING: counties not in county files (USDA centroid used): " + "; ".join(sorted(unmatched)))
-    return [r for r in rows if r["lon"] is not None]
+        r["zone"] = bool(o)
+    return unmatched
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--commit", action="store_true", default=os.environ.get("COMMIT") == "1")
     ap.add_argument("--bootstrap-file", help="decode a saved bootstrap instead of fetching")
+    ap.add_argument("--place-only", action="store_true",
+                    help="re-place the dots in the existing cases.json (after a zone update); no USDA fetch")
     args = ap.parse_args()
+
+    if args.place_only:
+        doc = json.load(open(OUT, encoding="utf-8"))
+        rows = doc["cases"]
+        before = [(c.get("lon"), c.get("lat")) for c in rows]
+        place(rows)
+        moved = sum(1 for c, b in zip(rows, before) if (c["lon"], c["lat"]) != b)
+        log("re-placed: %d of %d dots moved; %d inside an infested zone" % (
+            moved, len(rows), sum(1 for c in rows if c.get("zone"))))
+        if args.commit and moved:
+            doc["note"] = NOTE
+            with open(OUT, "w", encoding="utf-8") as f:
+                json.dump(doc, f, separators=(",", ":"), ensure_ascii=False)
+            log("wrote %s" % OUT)
+        return 0
 
     if args.bootstrap_file:
         text = open(args.bootstrap_file, encoding="utf-8").read()
@@ -270,7 +402,7 @@ def main():
         return 0
     doc = {"source": "USDA APHIS confirmed cases dashboard (ExportToCSV worksheet)",
            "page": APHIS_PAGE,
-           "note": "Positions are approximate: placed inside the reported county, not the premises.",
+           "note": NOTE,
            "updated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "cases": cases}
     with open(OUT, "w", encoding="utf-8") as f:
